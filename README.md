@@ -1,16 +1,41 @@
-# Volc Agent Launchpad
+# ZeroCommit
 
-A minimal Agent platform for three-day middleware hackathons. It provides Agent
-CRUD, a browser Playground, persistent workspaces, and Codex CLI backed by the
-Volcengine Ark Responses API.
+**Transactional execution for autonomous agents, built on the TikTok TechJam Volc Agent Launchpad.**
+
+ZeroCommit gives an agent speculative authority inside a shadow workspace. The
+control plane observes the resulting effects and owns the only path that can
+commit them into the persistent workspace. Unsafe transactions are discarded,
+and integrity hashes provide evidence of what reached real state.
+
+- **Competition:** TikTok TechJam 2026
+- **Track:** Track #1 — Agent Launchpad: Lightweight Agent Middleware
+- **Direction:** Kill Switch / Safety & Sandboxing
+- **Current enforcement slice:** transactional filesystem mutations
+
+The current milestone adds durable transaction lifecycles, shadow/real workspace
+separation, deterministic protected-path, permission, symlink, and hard-link
+checks, an effect ledger, crash-recoverable promotion/rollback, and transaction
+APIs. Process/network effect capture, the flagship hidden-dependency attack,
+automated recovery, and the final run visualization remain in progress.
+
+Project state:
+
+- [Vision](docs/VISION.md)
+- [Implementation plan](docs/IMPLEMENTATION.md)
+- [Execution status](docs/STATUS.md)
+
+## Starter platform
+
+The supplied Launchpad provides Agent CRUD, a browser Playground, persistent
+workspaces, and Codex CLI backed by the Volcengine Ark Responses API.
 
 Run it locally with Docker, Colima, or rootless Podman, or deploy it to
 Volcengine ECS.
 
 > [!WARNING]
-> This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
-> credentials. See [SECURITY.md](SECURITY.md).
+> This remains a single-user proof of concept. Do not use production data or
+> credentials. ZeroCommit currently makes a concrete guarantee only for the
+> transactional filesystem slice documented above. See [SECURITY.md](SECURITY.md).
 
 ## Screenshots
 
@@ -27,6 +52,11 @@ Volcengine ECS.
 - React and TypeScript Web UI
 - Agent create, edit, start, stop, delete, and multi-turn chat
 - Fastify control plane with asynchronous Run state
+- Durable ZeroCommit transaction records linked to every new Run
+- Isolated shadow workspace for speculative filesystem changes
+- Deterministic verification and control-plane-owned commit authority
+- Permission, symlink, hard-link, and protected-path invariants
+- Filesystem effect ledger and before/shadow/final integrity hashes
 - Persistent Agent workspaces and Codex sessions
 - Disposable Docker, Colima, or Podman container for each local turn
 - Docker and Terraform deployment paths for Volcengine ECS
@@ -59,8 +89,8 @@ Runtime image.
 ### 2. Clone the repository
 
 ```bash
-git clone <repository-url> volc-agent-launchpad
-cd volc-agent-launchpad
+git clone <repository-url> zerocommit
+cd zerocommit
 ```
 
 Skip this step when already working from the repository root.
@@ -97,7 +127,8 @@ In the Web UI:
    ```
 
 The Agent can write files, run commands, and continue the same Codex session in
-later messages.
+later messages. Every new Run executes against shadow state before ZeroCommit
+allows filesystem changes to reach the persistent workspace.
 
 ### 5. Stop and resume
 
@@ -174,6 +205,19 @@ AGENT_WORKSPACE_ROOT=workspaces
 CODEX_HOME=codex-home
 ```
 
+## Transaction API
+
+Each new Run includes a `transactionId`.
+
+```text
+GET /api/transactions/:id
+GET /api/agents/:id/transactions
+```
+
+A transaction exposes its lifecycle, decision, deterministic violations,
+filesystem effects, cleanup status, real-state outcome, and integrity hashes.
+There is deliberately no API that lets the agent commit its own transaction.
+
 ## Deployment
 
 - [Existing Linux ECS with Docker](docs/DEPLOYMENT.md#existing-linux-ecs)
@@ -215,19 +259,28 @@ See [.env.example](.env.example) for all Runtime and resource-limit options.
 ```mermaid
 flowchart LR
     UI["React Web UI"] --> API["Fastify control plane"]
-    API --> Store["JSON metadata and Agent workspaces"]
-    API --> Runtime{"Runtime provider"}
+    API --> Store["JSON metadata + transaction ledger"]
+    API --> Shadow["ZeroCommit shadow workspace"]
+    Shadow --> Runtime{"Runtime provider"}
     Runtime -->|Local POC| Container["Disposable Docker / Colima / Podman container"]
     Runtime -->|ECS profile| Codex["Codex CLI in application container"]
     Container --> Ark["Volcengine Ark Responses API"]
     Codex --> Ark
+    Runtime --> Verify["Deterministic verification"]
+    Verify -->|safe| Commit["Verified promotion"]
+    Verify -->|unsafe| Abort["Abort + discard"]
+    Commit --> Real["Persistent Agent workspace"]
+    Abort --> Real
 ```
 
-The first turn uses `codex exec`; later turns resume the stored Codex thread.
-Deleting an Agent archives its workspace under `workspaces/.deleted/`.
+The first turn uses `codex exec`; later committed turns resume the stored Codex
+thread. Aborted transactions reset the stored thread reference so tainted model
+state is not reused. Deleting an Agent archives its persistent workspace under
+`workspaces/.deleted/`.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component and extension
-boundaries.
+The current filesystem transaction boundary does not make already-sent network
+traffic reversible. The container Runtime is the intended judging path while
+network/process mediation is added in later phases.
 
 ## Validation
 
@@ -237,9 +290,16 @@ terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
 
+Core tests include safe commit, protected-path and permission-only aborts,
+real-state integrity proof, rollback, unsafe symlink and hard-link rejection, and
+database migration.
+
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md)
+- [ZeroCommit vision](docs/VISION.md)
+- [Implementation plan](docs/IMPLEMENTATION.md)
+- [Execution status](docs/STATUS.md)
+- [Starter architecture](docs/ARCHITECTURE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)

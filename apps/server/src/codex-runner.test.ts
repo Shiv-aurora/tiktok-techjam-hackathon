@@ -6,6 +6,7 @@ describe("Codex runner protocol", () => {
     const args = buildCodexArgs(
       {
         agentId: "agent",
+        transactionId: "transaction-1",
         workspacePath: "/tmp/workspace",
         prompt: "build a calculator",
         threadId: null,
@@ -28,6 +29,7 @@ describe("Codex runner protocol", () => {
     const args = buildCodexArgs(
       {
         agentId: "agent",
+        transactionId: "transaction-2",
         workspacePath: "/tmp/workspace",
         prompt: "add tests",
         threadId: "thread-123",

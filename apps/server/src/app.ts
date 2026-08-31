@@ -10,6 +10,7 @@ import type { AgentService } from "./agent-service.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
+const transactionIdParams = z.object({ id: z.string().uuid() });
 const createAgentBody = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional(),
@@ -116,6 +117,11 @@ export async function createApp(
     return { runs: service.getRuns(id) };
   });
 
+  app.get("/api/agents/:id/transactions", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    return { transactions: service.getTransactions(id) };
+  });
+
   app.post("/api/agents/:id/messages", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);
@@ -126,6 +132,11 @@ export async function createApp(
   app.get("/api/runs/:id", async (request) => {
     const { id } = runIdParams.parse(request.params);
     return { run: service.getRun(id) };
+  });
+
+  app.get("/api/transactions/:id", async (request) => {
+    const { id } = transactionIdParams.parse(request.params);
+    return { transaction: service.getTransaction(id) };
   });
 
   if (config.nodeEnv === "production") {
