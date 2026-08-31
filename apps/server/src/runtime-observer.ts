@@ -1,7 +1,11 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseRuntimeEffectLedger, type RuntimeEffectLedger } from "./runtime-effects.js";
-import { RUNTIME_OBSERVER_SOURCE } from "./runtime-observer-source.js";
+
+const RUNTIME_OBSERVER_TEMPLATE_PATH = fileURLToPath(
+  new URL("./runtime-observer.cjs", import.meta.url),
+);
 
 export type RuntimeObservationMode = "observe" | "enforce";
 
@@ -31,8 +35,9 @@ export async function prepareRuntimeObservation(
   const transactionPath = path.resolve(input.transactionPath);
   const observerPath = path.join(transactionPath, "runtime-observer.cjs");
   const effectLogPath = path.join(transactionPath, "runtime-effects.jsonl");
+  const observerSource = await readFile(RUNTIME_OBSERVER_TEMPLATE_PATH, "utf8");
   await mkdir(transactionPath, { recursive: true, mode: 0o700 });
-  await writeFile(observerPath, RUNTIME_OBSERVER_SOURCE, {
+  await writeFile(observerPath, observerSource, {
     encoding: "utf8",
     mode: 0o400,
   });
