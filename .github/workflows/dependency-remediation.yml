@@ -1,0 +1,49 @@
+name: One-time dependency remediation
+
+on:
+  push:
+    branches:
+      - zerocommit/flagship-hidden-attack
+    paths:
+      - .github/workflows/dependency-remediation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out implementation branch
+        uses: actions/checkout@v4
+        with:
+          ref: zerocommit/flagship-hidden-attack
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Upgrade vulnerable production dependencies
+        run: |
+          npm install '@fastify/static@^10.1.3' -w @launchpad/server
+          npm audit fix || true
+      - name: Require a clean production audit
+        run: npm audit --omit=dev --audit-level=high
+      - name: Validate remediated dependency graph
+        run: |
+          npm run check
+          npm run demo:attack
+      - name: Commit generated dependency updates
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add package.json package-lock.json apps/server/package.json apps/web/package.json
+          if git diff --cached --quiet; then
+            echo 'No dependency changes were required.'
+          else
+            git commit -m 'fix: remediate production dependency advisories'
+            git push origin HEAD:zerocommit/flagship-hidden-attack
+          fi
