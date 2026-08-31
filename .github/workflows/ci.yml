@@ -26,3 +26,5 @@ jobs:
         run: npm ci
       - name: Typecheck, test, and build
         run: npm run check
+      - name: Run flagship ZeroCommit OFF/ON evidence
+        run: npm run demo:attack
