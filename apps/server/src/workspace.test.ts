@@ -1,5 +1,7 @@
 import {
   access,
+  lstat,
+  mkdir,
   mkdtemp,
   readFile,
   symlink,
@@ -66,6 +68,63 @@ describe("transactional workspace", () => {
 
     await expect(access(path.join(agent.workspacePath, "candidate.txt"))).rejects.toThrow();
     expect(finalHash).toBe(transaction.baselineHash);
+  });
+
+
+  it("refuses cleanup when committed real state no longer matches verification", async () => {
+    const { manager, agent } = await createWorkspace();
+    const transaction = await manager.prepareTransaction(
+      "55555555-5555-4555-8555-555555555555",
+      agent,
+    );
+    await writeFile(path.join(transaction.shadowWorkspacePath, "candidate.txt"), "verified\n");
+    const inspection = await manager.inspectTransaction(transaction);
+
+    await manager.promoteTransaction(transaction, inspection.shadowHash);
+    await writeFile(path.join(agent.workspacePath, "candidate.txt"), "changed after commit\n");
+
+    await expect(
+      manager.finalizeCommittedTransaction(transaction, inspection.shadowHash),
+    ).rejects.toBeInstanceOf(WorkspaceIsolationError);
+    await expect(lstat(transaction.backupWorkspacePath)).resolves.toBeDefined();
+
+    expect(await manager.abortTransaction(transaction)).toBe(transaction.baselineHash);
+  });
+
+  it("discards orphan transaction artifacts without trusting journal paths", async () => {
+    const { manager, root } = await createWorkspace();
+    const outsideDirectory = path.join(root, "outside-agent");
+    const sentinel = path.join(outsideDirectory, "sentinel.txt");
+    await mkdir(outsideDirectory);
+    await writeFile(sentinel, "must survive\n");
+
+    const orphanId = "untrusted-orphan";
+    const orphanPath = path.join(
+      root,
+      "workspaces",
+      ".zerocommit",
+      "transactions",
+      orphanId,
+    );
+    await mkdir(orphanPath, { recursive: true });
+    await writeFile(
+      path.join(orphanPath, "journal.json"),
+      JSON.stringify({
+        version: 1,
+        transactionId: orphanId,
+        agentId: "../../outside-agent",
+      }),
+    );
+
+    expect(await manager.recoverTransactions([])).toEqual([
+      expect.objectContaining({
+        transactionId: orphanId,
+        action: "discarded-orphan",
+        error: null,
+      }),
+    ]);
+    expect(await readFile(sentinel, "utf8")).toBe("must survive\n");
+    await expect(lstat(orphanPath)).rejects.toThrow();
   });
 
   it("rejects existing symlinks that escape the protected workspace", async () => {

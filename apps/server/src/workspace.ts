@@ -23,6 +23,8 @@ import type {
 
 const TRANSACTION_DIRECTORY = ".zerocommit";
 const TRANSACTION_JOURNAL = "journal.json";
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 interface WorkspaceEntry {
   path: string;
@@ -62,7 +64,7 @@ export interface TransactionInspection {
 
 export interface TransactionRecoveryResult {
   transactionId: string;
-  action: "finalized-commit" | "rolled-back" | "failed";
+  action: "finalized-commit" | "rolled-back" | "discarded-orphan" | "failed";
   finalRealHash: string | null;
   error: string | null;
 }
@@ -330,6 +332,9 @@ export class WorkspaceManager {
   }
 
   workspacePath(agentId: string): string {
+    if (!UUID_PATTERN.test(agentId)) {
+      throw new WorkspaceIsolationError("Agent ID is not a valid UUID");
+    }
     return path.join(this.root, agentId);
   }
 
@@ -340,15 +345,16 @@ export class WorkspaceManager {
   }
 
   async create(agent: Agent): Promise<void> {
-    await mkdir(agent.workspacePath, { recursive: false });
+    const workspacePath = this.assertAgentWorkspace(agent);
+    await mkdir(workspacePath, { recursive: false });
     await this.writeInstructions(agent);
     await writeFile(
-      path.join(agent.workspacePath, ".gitignore"),
+      path.join(workspacePath, ".gitignore"),
       [".codex/", "node_modules/", "dist/", ".env", "*.log", ""].join("\n"),
       "utf8",
     );
     await writeFile(
-      path.join(agent.workspacePath, "README.md"),
+      path.join(workspacePath, "README.md"),
       [
         "# " + agent.name + " workspace",
         "",
@@ -361,6 +367,7 @@ export class WorkspaceManager {
   }
 
   async writeInstructions(agent: Agent): Promise<void> {
+    const workspacePath = this.assertAgentWorkspace(agent);
     const content = [
       "# Platform-managed Agent instructions",
       "",
@@ -384,17 +391,18 @@ export class WorkspaceManager {
     ]
       .filter((line, index, lines) => !(line === "" && lines[index - 1] === ""))
       .join("\n");
-    await writeFile(path.join(agent.workspacePath, "AGENTS.md"), content, "utf8");
+    await writeFile(path.join(workspacePath, "AGENTS.md"), content, "utf8");
   }
 
   async archive(agent: Agent): Promise<string> {
+    const workspacePath = this.assertAgentWorkspace(agent);
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const destination = path.join(
       this.root,
       ".deleted",
       agent.id + "-" + timestamp,
     );
-    await rename(agent.workspacePath, destination);
+    await rename(workspacePath, destination);
     return destination;
   }
 
@@ -403,7 +411,7 @@ export class WorkspaceManager {
     agent: Agent,
   ): Promise<PreparedTransactionWorkspace> {
     const realWorkspacePath = this.assertAgentWorkspace(agent);
-    const transactionPath = path.join(this.transactionRoot, transactionId);
+    const transactionPath = this.managedTransactionPath(transactionId);
     const shadowWorkspacePath = path.join(transactionPath, "shadow");
     const backupWorkspacePath = path.join(transactionPath, "backup");
     const baseline = await scanWorkspace(realWorkspacePath);
@@ -511,8 +519,14 @@ export class WorkspaceManager {
 
   async finalizeCommittedTransaction(
     workspace: PreparedTransactionWorkspace,
+    expectedRealHash: string,
   ): Promise<string> {
     const finalRealHash = await this.hashWorkspace(workspace.realWorkspacePath);
+    if (finalRealHash !== expectedRealHash) {
+      throw new WorkspaceIsolationError(
+        "Committed workspace changed before transaction cleanup completed",
+      );
+    }
     await rm(workspace.backupWorkspacePath, { recursive: true, force: true });
     await rm(workspace.transactionPath, { recursive: true, force: true });
     return finalRealHash;
@@ -530,32 +544,60 @@ export class WorkspaceManager {
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const transactionPath = path.join(this.transactionRoot, entry.name);
+      const transaction = knownTransactions.get(entry.name);
+
+      if (!transaction) {
+        try {
+          await rm(transactionPath, { recursive: true, force: true });
+          results.push({
+            transactionId: entry.name,
+            action: "discarded-orphan",
+            finalRealHash: null,
+            error: null,
+          });
+        } catch (error) {
+          results.push({
+            transactionId: entry.name,
+            action: "failed",
+            finalRealHash: null,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        continue;
+      }
+
       try {
         const journal = JSON.parse(
           await readFile(path.join(transactionPath, TRANSACTION_JOURNAL), "utf8"),
         ) as TransactionJournal;
         if (
           journal.version !== 1 ||
-          journal.transactionId !== entry.name ||
-          !journal.agentId
+          journal.transactionId !== transaction.id ||
+          journal.agentId !== transaction.agentId
         ) {
           throw new WorkspaceIsolationError("Invalid transaction recovery journal");
         }
-        const transaction = knownTransactions.get(journal.transactionId);
-        if (transaction && transaction.agentId !== journal.agentId) {
-          throw new WorkspaceIsolationError("Transaction journal agent mismatch");
-        }
-        const workspace = this.recoveryWorkspace(journal);
-        if (transaction?.status === "committed") {
+        const workspace = this.recoveryWorkspace(transaction);
+        if (transaction.status === "committed") {
+          const expectedRealHash =
+            transaction.integrity.finalRealHash ?? transaction.integrity.shadowHash;
+          if (!expectedRealHash) {
+            throw new WorkspaceIsolationError(
+              "Committed transaction is missing its verified workspace hash",
+            );
+          }
           results.push({
-            transactionId: journal.transactionId,
+            transactionId: transaction.id,
             action: "finalized-commit",
-            finalRealHash: await this.finalizeCommittedTransaction(workspace),
+            finalRealHash: await this.finalizeCommittedTransaction(
+              workspace,
+              expectedRealHash,
+            ),
             error: null,
           });
         } else {
           results.push({
-            transactionId: journal.transactionId,
+            transactionId: transaction.id,
             action: "rolled-back",
             finalRealHash: await this.abortTransaction(workspace),
             error: null,
@@ -563,7 +605,7 @@ export class WorkspaceManager {
         }
       } catch (error) {
         results.push({
-          transactionId: entry.name,
+          transactionId: transaction.id,
           action: "failed",
           finalRealHash: null,
           error: error instanceof Error ? error.message : String(error),
@@ -587,13 +629,22 @@ export class WorkspaceManager {
     return actual;
   }
 
-  private recoveryWorkspace(journal: TransactionJournal): PreparedTransactionWorkspace {
-    const transactionPath = path.join(this.transactionRoot, journal.transactionId);
+  private managedTransactionPath(transactionId: string): string {
+    if (!UUID_PATTERN.test(transactionId)) {
+      throw new WorkspaceIsolationError("Transaction ID is not a valid UUID");
+    }
+    return path.join(this.transactionRoot, transactionId);
+  }
+
+  private recoveryWorkspace(
+    transaction: Pick<AgentTransaction, "id" | "agentId">,
+  ): PreparedTransactionWorkspace {
+    const transactionPath = this.managedTransactionPath(transaction.id);
     return {
-      transactionId: journal.transactionId,
-      agentId: journal.agentId,
+      transactionId: transaction.id,
+      agentId: transaction.agentId,
       transactionPath,
-      realWorkspacePath: this.workspacePath(journal.agentId),
+      realWorkspacePath: this.workspacePath(transaction.agentId),
       shadowWorkspacePath: path.join(transactionPath, "shadow"),
       backupWorkspacePath: path.join(transactionPath, "backup"),
       baseline: new Map(),

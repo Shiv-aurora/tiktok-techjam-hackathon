@@ -2,6 +2,7 @@ import {
   access,
   chmod,
   link,
+  lstat,
   mkdtemp,
   readFile,
   symlink,
@@ -13,7 +14,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
-import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
+import type {
+  AgentRunner,
+  AgentTransaction,
+  RunnerRequest,
+  RunnerResult,
+} from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 
 class FakeRunner implements AgentRunner {
@@ -43,7 +49,15 @@ afterEach(async () => {
   );
 });
 
-async function makeService(runner: AgentRunner = new FakeRunner()): Promise<AgentService> {
+interface ServiceHarness {
+  service: AgentService;
+  store: JsonStore;
+  workspaces: WorkspaceManager;
+}
+
+async function makeHarness(
+  runner: AgentRunner = new FakeRunner(),
+): Promise<ServiceHarness> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -54,14 +68,15 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
   });
-  const service = new AgentService(
-    config,
-    new JsonStore(path.join(root, "data", "db.json")),
-    new WorkspaceManager(path.join(root, "workspaces")),
-    runner,
-  );
+  const store = new JsonStore(path.join(root, "data", "db.json"));
+  const workspaces = new WorkspaceManager(path.join(root, "workspaces"));
+  const service = new AgentService(config, store, workspaces, runner);
   await service.initialize();
-  return service;
+  return { service, store, workspaces };
+}
+
+async function makeService(runner: AgentRunner = new FakeRunner()): Promise<AgentService> {
+  return (await makeHarness(runner)).service;
 }
 
 describe("Agent lifecycle", () => {
@@ -215,8 +230,8 @@ describe("Agent lifecycle", () => {
         expect.objectContaining({ code: "EXTERNAL_SYMLINK", path: "escape-link" }),
       ]),
     );
-    await expect(access(path.join(agent.workspacePath, "absolute-link"))).rejects.toThrow();
-    await expect(access(path.join(agent.workspacePath, "escape-link"))).rejects.toThrow();
+    await expect(lstat(path.join(agent.workspacePath, "absolute-link"))).rejects.toThrow();
+    await expect(lstat(path.join(agent.workspacePath, "escape-link"))).rejects.toThrow();
   });
 
   it("aborts hard links so committed files remain transaction-owned", async () => {
@@ -240,6 +255,91 @@ describe("Agent lifecycle", () => {
     );
     await expect(access(path.join(agent.workspacePath, "hardlink-source.txt"))).rejects.toThrow();
     await expect(access(path.join(agent.workspacePath, "hardlink-copy.txt"))).rejects.toThrow();
+  });
+
+
+  it("keeps the Agent locked until committed transaction cleanup finishes", async () => {
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const { service, workspaces } = await makeHarness();
+    const finalize = workspaces.finalizeCommittedTransaction.bind(workspaces);
+    workspaces.finalizeCommittedTransaction = async (workspace, expectedRealHash) => {
+      await cleanupGate;
+      return finalize(workspace, expectedRealHash);
+    };
+    const agent = await service.createAgent({ name: "Cleanup lock" });
+    const { run } = await service.sendMessage(agent.id, "finish one transaction");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    await expect(
+      service.sendMessage(agent.id, "must not overlap cleanup"),
+    ).rejects.toMatchObject({ statusCode: 409 });
+
+    releaseCleanup();
+    await expect
+      .poll(() => service.getTransaction(run.transactionId ?? "").cleanupStatus)
+      .toBe("completed");
+  });
+
+  it("fails closed when transaction recovery cannot be trusted", async () => {
+    const { service, store, workspaces } = await makeHarness();
+    const agent = await service.createAgent({ name: "Recovery guard" });
+    const timestamp = new Date().toISOString();
+    const transaction: AgentTransaction = {
+      id: "99999999-9999-4999-8999-999999999999",
+      agentId: agent.id,
+      runId: "88888888-8888-4888-8888-888888888888",
+      status: "committing",
+      decision: "commit",
+      decisionReason: "verification passed",
+      violations: [],
+      effects: [],
+      isolation: "shadow-workspace",
+      realStateOutcome: null,
+      integrity: {
+        baselineHash: "baseline",
+        shadowHash: "shadow",
+        realHashBeforeDecision: "baseline",
+        finalRealHash: null,
+      },
+      cleanupStatus: "pending",
+      cleanupError: null,
+      startedAt: timestamp,
+      verifiedAt: timestamp,
+      completedAt: null,
+      createdAt: timestamp,
+    };
+    await store.mutate((database) => {
+      database.transactions.push(transaction);
+      const storedAgent = database.agents.find((item) => item.id === agent.id);
+      if (storedAgent) storedAgent.status = "busy";
+    });
+    workspaces.recoverTransactions = async () => [
+      {
+        transactionId: transaction.id,
+        action: "failed",
+        finalRealHash: null,
+        error: "journal mismatch",
+      },
+    ];
+
+    await service.initialize();
+
+    expect(service.getAgent(agent.id)).toMatchObject({
+      status: "error",
+      codexThreadId: null,
+      lastError: expect.stringContaining("ZeroCommit recovery failed"),
+    });
+    expect(service.getTransaction(transaction.id)).toMatchObject({
+      status: "aborted",
+      cleanupStatus: "failed",
+      realStateOutcome: "unknown",
+    });
+    await expect(service.startAgent(agent.id)).rejects.toMatchObject({
+      statusCode: 409,
+    });
   });
 
   it("atomically accepts only one concurrent run per Agent", async () => {

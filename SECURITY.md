@@ -19,8 +19,12 @@ The current verifier blocks:
 - hard-linked files
 - special files such as sockets, devices, and FIFOs
 - commit when the real or shadow workspace diverges after verification
+- recovery journals that do not match a known transaction and Agent
+- subsequent Agent activity while transaction cleanup or recovery is unresolved
 
-On abort, the shadow workspace is discarded. Before/shadow/final SHA-256
+On abort, the shadow workspace is discarded. Unknown recovery artifacts are
+discarded without trusting journal-supplied workspace paths; a known recovery
+mismatch leaves the Agent blocked for inspection. Before/shadow/final SHA-256
 manifests provide evidence of whether protected real state changed. Commit uses
 crash-recoverable directory promotion rather than claiming a single-filesystem
 operation can make arbitrary external effects atomic.

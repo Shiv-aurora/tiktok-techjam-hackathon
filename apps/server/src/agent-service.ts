@@ -26,6 +26,8 @@ import {
 } from "./workspace.js";
 
 const now = () => new Date().toISOString();
+const ZERO_COMMIT_CLEANUP_ERROR_PREFIX = "ZeroCommit cleanup failed:";
+const ZERO_COMMIT_RECOVERY_ERROR_PREFIX = "ZeroCommit recovery failed:";
 
 const requiredAgent = (database: Database, agentId: string): Agent => {
   const agent = database.agents.find((item) => item.id === agentId);
@@ -50,6 +52,14 @@ const requiredTransaction = (
   return transaction;
 };
 
+const hasUnresolvedCleanup = (database: Database, agentId: string): boolean =>
+  database.transactions.some(
+    (transaction) =>
+      transaction.agentId === agentId &&
+      (transaction.status === "committed" || transaction.status === "aborted") &&
+      transaction.cleanupStatus !== "completed",
+  );
+
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
@@ -64,12 +74,25 @@ export class AgentService {
   async initialize(): Promise<void> {
     await this.store.initialize();
     await this.workspaces.initialize();
-    const recoveries = await this.workspaces.recoverTransactions(
-      this.store.snapshot().transactions,
-    );
+    const persistedTransactions = this.store.snapshot().transactions;
+    const recoveries = await this.workspaces.recoverTransactions(persistedTransactions);
     const recoveryById = new Map(
       recoveries.map((recovery) => [recovery.transactionId, recovery]),
     );
+    const transactionAgentById = new Map(
+      persistedTransactions.map((transaction) => [transaction.id, transaction.agentId]),
+    );
+    const failedRecoveryByAgent = new Map<string, string>();
+    for (const recovery of recoveries) {
+      if (recovery.action !== "failed") continue;
+      const agentId = transactionAgentById.get(recovery.transactionId);
+      if (agentId) {
+        failedRecoveryByAgent.set(
+          agentId,
+          recovery.error ?? "transaction recovery did not complete",
+        );
+      }
+    }
 
     await this.store.mutate((database) => {
       const timestamp = now();
@@ -80,6 +103,17 @@ export class AgentService {
           transaction.cleanupError = recovery.error;
           if (recovery.finalRealHash) {
             transaction.integrity.finalRealHash = recovery.finalRealHash;
+          }
+          if (recovery.action === "finalized-commit") {
+            transaction.realStateOutcome = "committed";
+          } else if (recovery.action === "rolled-back") {
+            transaction.realStateOutcome =
+              recovery.finalRealHash &&
+              transaction.integrity.baselineHash === recovery.finalRealHash
+                ? "unchanged"
+                : "unknown";
+          } else if (recovery.action === "failed") {
+            transaction.realStateOutcome = "unknown";
           }
         } else if (
           (transaction.status === "committed" || transaction.status === "aborted") &&
@@ -113,9 +147,28 @@ export class AgentService {
         }
       }
       for (const agent of database.agents) {
+        const recoveryError = failedRecoveryByAgent.get(agent.id);
+        if (recoveryError) {
+          agent.status = "error";
+          agent.codexThreadId = null;
+          agent.lastError =
+            ZERO_COMMIT_RECOVERY_ERROR_PREFIX + " " + recoveryError;
+          agent.updatedAt = timestamp;
+          continue;
+        }
         if (agent.status === "busy") {
           agent.status = "ready";
           agent.codexThreadId = null;
+          agent.updatedAt = timestamp;
+        } else if (
+          agent.status === "error" &&
+          agent.lastError &&
+          (agent.lastError.startsWith(ZERO_COMMIT_CLEANUP_ERROR_PREFIX) ||
+            agent.lastError.startsWith(ZERO_COMMIT_RECOVERY_ERROR_PREFIX)) &&
+          !hasUnresolvedCleanup(database, agent.id)
+        ) {
+          agent.status = "ready";
+          agent.lastError = null;
           agent.updatedAt = timestamp;
         }
       }
@@ -158,16 +211,27 @@ export class AgentService {
 
   async updateAgent(id: string, input: UpdateAgentInput): Promise<Agent> {
     const current = this.getAgent(id);
-    if (current.status === "busy") {
-      throw new HttpError(409, "Stop the active run before editing this Agent");
+    if (
+      current.status === "busy" ||
+      this.activeExecutions.has(id) ||
+      hasUnresolvedCleanup(this.store.snapshot(), id)
+    ) {
+      throw new HttpError(409, "Finish or recover the active transaction before editing this Agent");
     }
     const updated = await this.store.mutate((database) => {
       const agent = database.agents.find((item) => item.id === id);
       if (!agent) {
         throw new HttpError(404, "Agent not found");
       }
-      if (agent.status === "busy") {
-        throw new HttpError(409, "Stop the active run before editing this Agent");
+      if (
+        agent.status === "busy" ||
+        this.activeExecutions.has(id) ||
+        hasUnresolvedCleanup(database, id)
+      ) {
+        throw new HttpError(
+          409,
+          "Finish or recover the active transaction before editing this Agent",
+        );
       }
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
@@ -255,6 +319,9 @@ export class AgentService {
         "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
       );
     }
+    if (this.activeExecutions.has(agentId)) {
+      throw new HttpError(409, "This Agent still has an active transaction");
+    }
     const timestamp = now();
     const runId = randomUUID();
     const transactionId = randomUUID();
@@ -307,6 +374,12 @@ export class AgentService {
       const storedAgent = database.agents.find((item) => item.id === agentId);
       if (!storedAgent) {
         throw new HttpError(404, "Agent not found");
+      }
+      if (
+        this.activeExecutions.has(agentId) ||
+        hasUnresolvedCleanup(database, agentId)
+      ) {
+        throw new HttpError(409, "This Agent has an unresolved transaction");
       }
       if (storedAgent.status === "stopped") {
         throw new HttpError(409, "Start the Agent before sending a message");
@@ -469,7 +542,10 @@ export class AgentService {
       });
 
       try {
-        const finalizedHash = await this.workspaces.finalizeCommittedTransaction(workspace);
+        const finalizedHash = await this.workspaces.finalizeCommittedTransaction(
+          workspace,
+          finalRealHash,
+        );
         await this.store
           .mutate((database) => {
             const storedTransaction = requiredTransaction(database, transaction.id);
@@ -485,6 +561,14 @@ export class AgentService {
             const storedTransaction = requiredTransaction(database, transaction.id);
             storedTransaction.cleanupStatus = "failed";
             storedTransaction.cleanupError = cleanupError;
+            storedTransaction.realStateOutcome = "unknown";
+            const agent = database.agents.find((item) => item.id === agentAtStart.id);
+            if (agent && agent.status !== "stopped") {
+              agent.status = "error";
+              agent.lastError =
+                ZERO_COMMIT_CLEANUP_ERROR_PREFIX + " " + cleanupError;
+              agent.updatedAt = now();
+            }
           })
           .catch(() => undefined);
       }
@@ -585,8 +669,13 @@ export class AgentService {
       if (!agent) {
         throw new HttpError(404, "Agent not found");
       }
-      if (status === "ready" && agent.status === "busy") {
-        throw new HttpError(409, "Stop the active run before starting this Agent");
+      if (
+        status === "ready" &&
+        (agent.status === "busy" ||
+          this.activeExecutions.has(id) ||
+          hasUnresolvedCleanup(database, id))
+      ) {
+        throw new HttpError(409, "Recover the active transaction before starting this Agent");
       }
       agent.status = status;
       if (status === "ready") agent.lastError = null;
