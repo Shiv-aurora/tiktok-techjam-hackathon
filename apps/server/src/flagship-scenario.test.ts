@@ -42,9 +42,14 @@ describe("ZeroCommit flagship hidden downstream attack", () => {
       expect(attackPath).toContain("Protected credential read");
       expect(attackPath).toContain("Blocked network attempt");
 
-      expect(JSON.stringify(result.zeroCommitOn.runtimeEffects)).not.toContain(
+      const serializedEffects = JSON.stringify(result.zeroCommitOn.runtimeEffects);
+      expect(serializedEffects).not.toContain(
         "zc_demo_credential_3d8f6b9e_not_a_real_secret",
       );
+      expect(serializedEffects).not.toContain(
+        "fixture_argument_must_be_redacted",
+      );
+      expect(serializedEffects).toContain("--token=<redacted>");
     },
     30_000,
   );
