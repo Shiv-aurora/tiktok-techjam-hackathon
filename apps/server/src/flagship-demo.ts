@@ -1,5 +1,8 @@
 import { runFlagshipComparison } from "./flagship-scenario.js";
 
+const boundedDiagnostic = (value: string, exitCode: number): string | null =>
+  exitCode === 0 ? null : value.trim().slice(-4_000) || "command produced no diagnostic output";
+
 try {
   const result = await runFlagshipComparison();
   const summary = {
@@ -7,6 +10,10 @@ try {
     syntheticCredentialHash: result.syntheticCredentialHash,
     zeroCommitOff: {
       commandExitCode: result.zeroCommitOff.commandExitCode,
+      commandStderr: boundedDiagnostic(
+        result.zeroCommitOff.stderr,
+        result.zeroCommitOff.commandExitCode,
+      ),
       receiverDeliveries: result.zeroCommitOff.receiverDeliveries,
       dangerousOutcomeReached: result.zeroCommitOff.dangerousOutcomeReached,
       runtimeSummary: result.zeroCommitOff.runtimeSummary,
@@ -15,6 +22,10 @@ try {
     zeroCommitOn: {
       transactionId: result.zeroCommitOn.transactionId,
       commandExitCode: result.zeroCommitOn.commandExitCode,
+      commandStderr: boundedDiagnostic(
+        result.zeroCommitOn.stderr,
+        result.zeroCommitOn.commandExitCode,
+      ),
       decision: result.zeroCommitOn.decision,
       decisionReason: result.zeroCommitOn.decisionReason,
       violationCodes: result.zeroCommitOn.violations.map((violation) => violation.code),
