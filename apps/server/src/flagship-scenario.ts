@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
@@ -28,6 +28,8 @@ const FIXTURE_ROOT = fileURLToPath(
 const SYNTHETIC_CREDENTIAL =
   "zc_demo_credential_3d8f6b9e_not_a_real_secret";
 const PROTECTED_RESOURCE = "protected/credential.txt";
+const COMMAND_TIMEOUT_MS = 15_000;
+const FORCE_KILL_DELAY_MS = 2_000;
 
 interface CommandExecution {
   exitCode: number;
@@ -126,6 +128,24 @@ function appendBounded(current: string, chunk: Buffer): string {
   return next.length > 131_072 ? next.slice(-131_072) : next;
 }
 
+function terminateProcessTree(
+  child: ChildProcess,
+  signal: NodeJS.Signals,
+): void {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // Fall through to direct termination when the process group no longer exists.
+    }
+  }
+  child.kill(signal);
+}
+
 async function runFixtureCommand(
   cwd: string,
   environment: NodeJS.ProcessEnv,
@@ -136,10 +156,36 @@ async function runFixtureCommand(
       cwd,
       env: environment,
       stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let forceKillTimer: NodeJS.Timeout | null = null;
+
+    const clearTimers = () => {
+      clearTimeout(timeout);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+    };
+
+    const timeout = setTimeout(() => {
+      stderr = appendBounded(
+        stderr,
+        Buffer.from(
+          "\nZeroCommit terminated the flagship fixture after " +
+            COMMAND_TIMEOUT_MS +
+            " ms.\n",
+        ),
+      );
+      terminateProcessTree(child, "SIGTERM");
+      forceKillTimer = setTimeout(
+        () => terminateProcessTree(child, "SIGKILL"),
+        FORCE_KILL_DELAY_MS,
+      );
+      forceKillTimer.unref();
+    }, COMMAND_TIMEOUT_MS);
+    timeout.unref();
+
     child.stdout.on("data", (chunk: Buffer) => {
       stdout = appendBounded(stdout, chunk);
     });
@@ -149,11 +195,13 @@ async function runFixtureCommand(
     child.once("error", (error) => {
       if (settled) return;
       settled = true;
+      clearTimers();
       reject(error);
     });
     child.once("close", (exitCode) => {
       if (settled) return;
       settled = true;
+      clearTimers();
       resolve({ exitCode: exitCode ?? 1, stdout, stderr });
     });
   });
