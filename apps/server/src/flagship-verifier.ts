@@ -30,45 +30,67 @@ export function verifyFlagshipTransaction(
     });
   }
 
-  if (runtimeLedger.effects.length === 0) {
-    violations.push({
-      code: "RUNTIME_EVIDENCE_MISSING",
-      message: "The transaction produced no trustworthy runtime-effect evidence.",
-      path: null,
-    });
-  }
-
-  for (const effect of runtimeLedger.effects) {
-    if (effect.kind === "sensitive-resource.read") {
-      violations.push({
-        code: "PROTECTED_RESOURCE_READ",
-        message:
-          "A downstream process read a protected credential during speculative execution.",
-        path: effect.resourcePath,
-      });
-    }
-    if (effect.kind === "network.attempt" && !effect.authorized) {
-      violations.push({
-        code: "UNAUTHORIZED_NETWORK_ATTEMPT",
-        message:
-          "A downstream process attempted to contact an unauthorized network destination.",
-        path: effect.origin,
-      });
-      if (mode === "enforce" && effect.enforcement !== "blocked") {
-        violations.push({
-          code: "UNAUTHORIZED_NETWORK_ESCAPED",
-          message:
-            "An unauthorized network attempt was observed but not contained by the runtime boundary.",
-          path: effect.origin,
-        });
-      }
-    }
-  }
-
+  const processStarts = runtimeLedger.effects.filter(
+    (effect) => effect.kind === "process.started",
+  );
+  const sensitiveReads = runtimeLedger.effects.filter(
+    (effect) => effect.kind === "sensitive-resource.read",
+  );
   const unauthorizedNetworkEffects = runtimeLedger.effects.filter(
     (effect): effect is NetworkAttemptEffect =>
       effect.kind === "network.attempt" && !effect.authorized,
   );
+
+  if (processStarts.length === 0) {
+    violations.push({
+      code: "RUNTIME_PROCESS_EVIDENCE_MISSING",
+      message: "The flagship transaction produced no trustworthy process evidence.",
+      path: null,
+    });
+  }
+  if (sensitiveReads.length === 0) {
+    violations.push({
+      code: "EXPECTED_PROTECTED_READ_MISSING",
+      message:
+        "The flagship attack completed without trustworthy evidence of its expected protected-resource read.",
+      path: null,
+    });
+  }
+  if (unauthorizedNetworkEffects.length === 0) {
+    violations.push({
+      code: "EXPECTED_NETWORK_ATTEMPT_MISSING",
+      message:
+        "The flagship attack completed without trustworthy evidence of its expected unauthorized network attempt.",
+      path: null,
+    });
+  }
+
+  for (const effect of sensitiveReads) {
+    violations.push({
+      code: "PROTECTED_RESOURCE_READ",
+      message:
+        "A downstream process read a protected credential during speculative execution.",
+      path: effect.resourcePath,
+    });
+  }
+
+  for (const effect of unauthorizedNetworkEffects) {
+    violations.push({
+      code: "UNAUTHORIZED_NETWORK_ATTEMPT",
+      message:
+        "A downstream process attempted to contact an unauthorized network destination.",
+      path: effect.origin,
+    });
+    if (mode === "enforce" && effect.enforcement !== "blocked") {
+      violations.push({
+        code: "UNAUTHORIZED_NETWORK_ESCAPED",
+        message:
+          "An unauthorized network attempt was observed but not contained by the runtime boundary.",
+        path: effect.origin,
+      });
+    }
+  }
+
   const networkContained =
     unauthorizedNetworkEffects.length > 0 &&
     unauthorizedNetworkEffects.every((effect) => effect.enforcement === "blocked");
