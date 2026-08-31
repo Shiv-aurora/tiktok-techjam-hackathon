@@ -148,6 +148,7 @@ function parseRuntimeEffect(
   if (transactionId !== expectedTransactionId) {
     throw new Error("effect transactionId does not match the active transaction");
   }
+
   const kind = requiredString(value, "kind") as RuntimeEffectKind;
   const common = {
     id,
@@ -305,6 +306,27 @@ const commandLabel = (effect: ProcessStartedEffect | ProcessSpawnedEffect): stri
     (args ? " " + args : "");
 };
 
+const networkPresentation = (
+  effect: NetworkAttemptEffect,
+): Pick<CausalEffectNode, "label" | "risk"> => {
+  if (effect.enforcement === "blocked") {
+    return {
+      label: "Blocked network attempt: " + effect.origin,
+      risk: "blocked",
+    };
+  }
+  if (effect.authorized) {
+    return {
+      label: "Allowed network request: " + effect.origin,
+      risk: "normal",
+    };
+  }
+  return {
+    label: "Unauthorized network attempt: " + effect.origin,
+    risk: "dangerous",
+  };
+};
+
 const runtimeNode = (effect: RuntimeEffect): CausalEffectNode => {
   switch (effect.kind) {
     case "process.started":
@@ -336,12 +358,8 @@ const runtimeNode = (effect: RuntimeEffect): CausalEffectNode => {
       return {
         id: effect.id,
         kind: effect.kind,
-        label:
-          (effect.enforcement === "blocked"
-            ? "Blocked network attempt: "
-            : "Unauthorized network attempt: ") + effect.origin,
         parentEffectId: effect.parentEffectId,
-        risk: effect.enforcement === "blocked" ? "blocked" : "dangerous",
+        ...networkPresentation(effect),
       };
   }
 };
