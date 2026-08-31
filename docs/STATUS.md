@@ -12,12 +12,13 @@ Completed:
 - Added transaction read APIs and matching web-client types.
 - Added positive and adversarial tests plus clean-install CI.
 - Documented the current trust boundary and limitations.
+- Squash-merged PR #1 into `main` as commit `a8aea7f616b8f92aa970223a51cc42fd72f2bdd8`.
 
 Last verified:
-- `npm run check` passed on Node.js 22 in GitHub Actions from a clean `npm ci` at commit `2f30111d2865a8512c7878a1455b9372bf6cee2c`.
+- `npm run check` passed on Node.js 22 in GitHub Actions from a clean `npm ci` at the final PR head `b278a469a41cca711fb75eb01c9bb000c7abc0fc`.
 - The check covered server and web typechecking, the complete automated test suite, and the production build.
 - Focused runtime smoke tests proved safe commit and unchanged real-state hashes after rejected permission, symlink, hard-link, cleanup-race, and recovery-tampering scenarios.
-- PR #1 is mergeable and contains only the intended ZeroCommit transaction-foundation milestone.
+- The merged change set contains only the intended 20-file ZeroCommit transaction-foundation milestone.
 
 Blockers:
 - A live Ark/Codex Agent Run requires runtime credentials and a container environment; deterministic transaction behavior is validated without them.
