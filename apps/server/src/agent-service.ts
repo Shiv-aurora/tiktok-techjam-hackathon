@@ -1,19 +1,54 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
-import { HttpError, RunCancelledError } from "./errors.js";
+import {
+  HttpError,
+  RunCancelledError,
+  TransactionAbortedError,
+} from "./errors.js";
 import { JsonStore } from "./store.js";
+import { verifyTransaction } from "./transaction-verifier.js";
 import type {
   Agent,
   AgentRun,
   AgentRunner,
+  AgentTransaction,
   CreateAgentInput,
+  Database,
   Message,
+  TransactionViolation,
   UpdateAgentInput,
 } from "./types.js";
-import { WorkspaceManager } from "./workspace.js";
+import {
+  WorkspaceIsolationError,
+  WorkspaceManager,
+  type PreparedTransactionWorkspace,
+} from "./workspace.js";
 
 const now = () => new Date().toISOString();
+
+const requiredAgent = (database: Database, agentId: string): Agent => {
+  const agent = database.agents.find((item) => item.id === agentId);
+  if (!agent) throw new Error("Agent disappeared during execution: " + agentId);
+  return agent;
+};
+
+const requiredRun = (database: Database, runId: string): AgentRun => {
+  const run = database.runs.find((item) => item.id === runId);
+  if (!run) throw new Error("Run disappeared during execution: " + runId);
+  return run;
+};
+
+const requiredTransaction = (
+  database: Database,
+  transactionId: string,
+): AgentTransaction => {
+  const transaction = database.transactions.find((item) => item.id === transactionId);
+  if (!transaction) {
+    throw new Error("Transaction disappeared during execution: " + transactionId);
+  }
+  return transaction;
+};
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
@@ -29,18 +64,59 @@ export class AgentService {
   async initialize(): Promise<void> {
     await this.store.initialize();
     await this.workspaces.initialize();
+    const recoveries = await this.workspaces.recoverTransactions(
+      this.store.snapshot().transactions,
+    );
+    const recoveryById = new Map(
+      recoveries.map((recovery) => [recovery.transactionId, recovery]),
+    );
+
     await this.store.mutate((database) => {
+      const timestamp = now();
+      for (const transaction of database.transactions) {
+        const recovery = recoveryById.get(transaction.id);
+        if (recovery) {
+          transaction.cleanupStatus = recovery.action === "failed" ? "failed" : "completed";
+          transaction.cleanupError = recovery.error;
+          if (recovery.finalRealHash) {
+            transaction.integrity.finalRealHash = recovery.finalRealHash;
+          }
+        } else if (
+          (transaction.status === "committed" || transaction.status === "aborted") &&
+          transaction.cleanupStatus === "pending"
+        ) {
+          transaction.cleanupStatus = "completed";
+          transaction.cleanupError = null;
+        }
+
+        if (transaction.status !== "committed" && transaction.status !== "aborted") {
+          transaction.status = "aborted";
+          transaction.decision = "abort";
+          transaction.decisionReason = "Server restarted before the transaction completed.";
+          transaction.completedAt = timestamp;
+          const finalHash = recovery?.finalRealHash ?? null;
+          const baselineHash = transaction.integrity.baselineHash;
+          transaction.realStateOutcome =
+            finalHash && baselineHash && finalHash === baselineHash ? "unchanged" : "unknown";
+          if (!recovery) {
+            transaction.cleanupStatus = "completed";
+            transaction.cleanupError = null;
+          }
+        }
+      }
+
       for (const run of database.runs) {
         if (run.status === "queued" || run.status === "running") {
           run.status = "cancelled";
           run.error = "Server restarted while this run was active";
-          run.completedAt = now();
+          run.completedAt = timestamp;
         }
       }
       for (const agent of database.agents) {
         if (agent.status === "busy") {
           agent.status = "ready";
-          agent.updatedAt = now();
+          agent.codexThreadId = null;
+          agent.updatedAt = timestamp;
         }
       }
     });
@@ -112,6 +188,7 @@ export class AgentService {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
+      database.transactions = database.transactions.filter((item) => item.agentId !== id);
     });
     return { archivedWorkspace };
   }
@@ -150,6 +227,24 @@ export class AgentService {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
+  getTransaction(transactionId: string): AgentTransaction {
+    const transaction = this.store
+      .snapshot()
+      .transactions.find((item) => item.id === transactionId);
+    if (!transaction) {
+      throw new HttpError(404, "Transaction not found");
+    }
+    return transaction;
+  }
+
+  getTransactions(agentId: string): AgentTransaction[] {
+    this.getAgent(agentId);
+    return this.store
+      .snapshot()
+      .transactions.filter((transaction) => transaction.agentId === agentId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
   async sendMessage(
     agentId: string,
     prompt: string,
@@ -162,15 +257,41 @@ export class AgentService {
     }
     const timestamp = now();
     const runId = randomUUID();
+    const transactionId = randomUUID();
     const run: AgentRun = {
       id: runId,
       agentId,
+      transactionId,
       status: "queued",
       prompt,
       output: null,
       error: null,
       usage: null,
       startedAt: null,
+      completedAt: null,
+      createdAt: timestamp,
+    };
+    const transaction: AgentTransaction = {
+      id: transactionId,
+      agentId,
+      runId,
+      status: "created",
+      decision: null,
+      decisionReason: null,
+      violations: [],
+      effects: [],
+      isolation: "shadow-workspace",
+      realStateOutcome: null,
+      integrity: {
+        baselineHash: null,
+        shadowHash: null,
+        realHashBeforeDecision: null,
+        finalRealHash: null,
+      },
+      cleanupStatus: "pending",
+      cleanupError: null,
+      startedAt: null,
+      verifiedAt: null,
       completedAt: null,
       createdAt: timestamp,
     };
@@ -194,6 +315,7 @@ export class AgentService {
         throw new HttpError(409, "This Agent is already running");
       }
       database.runs.push(run);
+      database.transactions.push(transaction);
       database.messages.push(message);
       const snapshot = structuredClone(storedAgent);
       storedAgent.status = "busy";
@@ -201,7 +323,7 @@ export class AgentService {
       storedAgent.updatedAt = timestamp;
       return snapshot;
     });
-    const execution = this.executeRun(agentAtStart, run);
+    const execution = this.executeRun(agentAtStart, run, transaction);
     this.activeExecutions.set(agentId, execution);
     void execution
       .finally(() => {
@@ -229,32 +351,105 @@ export class AgentService {
         this.config.runtimeProvider === "container"
           ? "Codex CLI in " + this.config.containerEngine + " Runtime"
           : "Codex CLI in application container",
+      zeroCommit: {
+        enabled: true,
+        isolation: "shadow-workspace",
+        commitAuthority: "control-plane",
+        protectedPaths: ["AGENTS.md", ".zerocommit/**"],
+        currentEffectCoverage: ["filesystem"],
+        externalEffects: "not-yet-escrowed",
+      },
     };
   }
 
-  private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
-    await this.store.mutate((database) => {
-      const storedRun = database.runs.find((item) => item.id === run.id);
-      if (storedRun) {
-        storedRun.status = "running";
-        storedRun.startedAt = now();
-      }
-    });
+  private async executeRun(
+    agentAtStart: Agent,
+    run: AgentRun,
+    transaction: AgentTransaction,
+  ): Promise<void> {
+    let workspace: PreparedTransactionWorkspace | null = null;
+    const startedAt = now();
+
     try {
+      await this.store.mutate((database) => {
+        const storedRun = requiredRun(database, run.id);
+        const storedTransaction = requiredTransaction(database, transaction.id);
+        storedRun.status = "running";
+        storedRun.startedAt = startedAt;
+        storedTransaction.status = "preparing";
+        storedTransaction.startedAt = startedAt;
+      });
+
+      workspace = await this.workspaces.prepareTransaction(transaction.id, agentAtStart);
+      await this.store.mutate((database) => {
+        const storedTransaction = requiredTransaction(database, transaction.id);
+        storedTransaction.status = "executing";
+        storedTransaction.integrity.baselineHash = workspace?.baselineHash ?? null;
+      });
+
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
+
       const result = await this.runner.run({
         agentId: agentAtStart.id,
-        workspacePath: agentAtStart.workspacePath,
+        transactionId: transaction.id,
+        workspacePath: workspace.shadowWorkspacePath,
         prompt: run.prompt,
         threadId: agentAtStart.codexThreadId,
       });
-      const completedAt = now();
+
+      if (this.cancellationRequests.has(agentAtStart.id)) {
+        throw new RunCancelledError();
+      }
+
       await this.store.mutate((database) => {
-        const storedRun = database.runs.find((item) => item.id === run.id);
-        const agent = database.agents.find((item) => item.id === agentAtStart.id);
-        if (!storedRun || !agent) return;
+        requiredTransaction(database, transaction.id).status = "verifying";
+      });
+      const inspection = await this.workspaces.inspectTransaction(workspace);
+      const verification = verifyTransaction(inspection);
+      const verifiedAt = now();
+      await this.store.mutate((database) => {
+        const storedTransaction = requiredTransaction(database, transaction.id);
+        storedTransaction.decision = verification.decision;
+        storedTransaction.decisionReason = verification.reason;
+        storedTransaction.violations = verification.violations;
+        storedTransaction.effects = inspection.effects;
+        storedTransaction.integrity = {
+          baselineHash: inspection.baselineHash,
+          shadowHash: inspection.shadowHash,
+          realHashBeforeDecision: inspection.realHashBeforeDecision,
+          finalRealHash: null,
+        };
+        storedTransaction.verifiedAt = verifiedAt;
+      });
+
+      if (verification.decision === "abort") {
+        throw new TransactionAbortedError(verification.reason, verification.violations);
+      }
+      if (this.cancellationRequests.has(agentAtStart.id)) {
+        throw new RunCancelledError();
+      }
+
+      await this.store.mutate((database) => {
+        requiredTransaction(database, transaction.id).status = "committing";
+      });
+      const finalRealHash = await this.workspaces.promoteTransaction(
+        workspace,
+        inspection.shadowHash,
+      );
+      const completedAt = now();
+
+      await this.store.mutate((database) => {
+        const storedRun = requiredRun(database, run.id);
+        const storedTransaction = requiredTransaction(database, transaction.id);
+        const agent = requiredAgent(database, agentAtStart.id);
+
+        storedTransaction.status = "committed";
+        storedTransaction.realStateOutcome = "committed";
+        storedTransaction.integrity.finalRealHash = finalRealHash;
+        storedTransaction.completedAt = completedAt;
+
         storedRun.status = "completed";
         storedRun.output = result.output;
         storedRun.usage = result.usage;
@@ -272,22 +467,111 @@ export class AgentService {
         agent.lastError = null;
         agent.updatedAt = completedAt;
       });
+
+      try {
+        const finalizedHash = await this.workspaces.finalizeCommittedTransaction(workspace);
+        await this.store
+          .mutate((database) => {
+            const storedTransaction = requiredTransaction(database, transaction.id);
+            storedTransaction.cleanupStatus = "completed";
+            storedTransaction.cleanupError = null;
+            storedTransaction.integrity.finalRealHash = finalizedHash;
+          })
+          .catch(() => undefined);
+      } catch (error) {
+        const cleanupError = error instanceof Error ? error.message : String(error);
+        await this.store
+          .mutate((database) => {
+            const storedTransaction = requiredTransaction(database, transaction.id);
+            storedTransaction.cleanupStatus = "failed";
+            storedTransaction.cleanupError = cleanupError;
+          })
+          .catch(() => undefined);
+      }
     } catch (error) {
+      await this.store
+        .mutate((database) => {
+          const storedTransaction = requiredTransaction(database, transaction.id);
+          if (storedTransaction.status !== "committed") {
+            storedTransaction.status = "aborting";
+          }
+        })
+        .catch(() => undefined);
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
+      const policyAbort = error instanceof TransactionAbortedError;
       const message = error instanceof Error ? error.message : String(error);
-      await this.store.mutate((database) => {
-        const storedRun = database.runs.find((item) => item.id === run.id);
-        const agent = database.agents.find((item) => item.id === agentAtStart.id);
-        if (storedRun) {
-          storedRun.status = cancelled ? "cancelled" : "failed";
-          storedRun.error = message;
-          storedRun.completedAt = completedAt;
+      let cleanupError: string | null = null;
+      let finalRealHash: string | null = null;
+      let baselineHash = workspace?.baselineHash ?? null;
+
+      if (workspace) {
+        try {
+          finalRealHash = await this.workspaces.abortTransaction(workspace);
+        } catch (cleanupFailure) {
+          cleanupError =
+            cleanupFailure instanceof Error ? cleanupFailure.message : String(cleanupFailure);
         }
+      } else {
+        try {
+          finalRealHash = await this.workspaces.hashWorkspace(agentAtStart.workspacePath);
+          baselineHash = finalRealHash;
+        } catch (hashFailure) {
+          cleanupError =
+            hashFailure instanceof Error ? hashFailure.message : String(hashFailure);
+        }
+      }
+
+      const containmentSucceeded =
+        cleanupError === null &&
+        baselineHash !== null &&
+        finalRealHash !== null &&
+        baselineHash === finalRealHash;
+      const violations: TransactionViolation[] = policyAbort
+        ? error.violations
+        : [
+            {
+              code: cancelled
+                ? "RUN_CANCELLED"
+                : error instanceof WorkspaceIsolationError
+                  ? "WORKSPACE_ISOLATION_FAILED"
+                  : "EXECUTION_FAILED",
+              message,
+              path: null,
+            },
+          ];
+
+      await this.store.mutate((database) => {
+        const storedRun = requiredRun(database, run.id);
+        const storedTransaction = requiredTransaction(database, transaction.id);
+        const agent = database.agents.find((item) => item.id === agentAtStart.id);
+
+        storedTransaction.status = "aborted";
+        storedTransaction.decision = "abort";
+        storedTransaction.decisionReason =
+          storedTransaction.decisionReason ?? message;
+        storedTransaction.violations =
+          storedTransaction.violations.length > 0
+            ? storedTransaction.violations
+            : violations;
+        storedTransaction.realStateOutcome = containmentSucceeded ? "unchanged" : "unknown";
+        storedTransaction.integrity.baselineHash =
+          storedTransaction.integrity.baselineHash ?? baselineHash;
+        storedTransaction.integrity.finalRealHash = finalRealHash;
+        storedTransaction.cleanupStatus = cleanupError ? "failed" : "completed";
+        storedTransaction.cleanupError = cleanupError;
+        storedTransaction.completedAt = completedAt;
+
+        storedRun.status = cancelled ? "cancelled" : "failed";
+        storedRun.error = message;
+        storedRun.completedAt = completedAt;
+
         if (agent) {
           if (agent.status !== "stopped") {
-            agent.status = cancelled ? "ready" : "error";
+            agent.status =
+              cancelled || (policyAbort && containmentSucceeded) ? "ready" : "error";
           }
+          agent.codexThreadId = null;
           agent.lastError = cancelled ? null : message;
           agent.updatedAt = completedAt;
         }

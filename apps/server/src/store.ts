@@ -1,13 +1,58 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Database } from "./types.js";
+import type { AgentRun, Database } from "./types.js";
+
+interface LegacyRun extends Omit<AgentRun, "transactionId"> {}
+
+interface LegacyDatabaseV1 {
+  version: 1;
+  agents: Database["agents"];
+  messages: Database["messages"];
+  runs: LegacyRun[];
+}
 
 const emptyDatabase = (): Database => ({
-  version: 1,
+  version: 2,
   agents: [],
   messages: [],
   runs: [],
+  transactions: [],
 });
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+function parseDatabase(raw: string): { database: Database; migrated: boolean } {
+  const parsed: unknown = JSON.parse(raw);
+  if (
+    !isRecord(parsed) ||
+    !Array.isArray(parsed.agents) ||
+    !Array.isArray(parsed.messages) ||
+    !Array.isArray(parsed.runs)
+  ) {
+    throw new Error("Unsupported database format");
+  }
+
+  if (parsed.version === 2 && Array.isArray(parsed.transactions)) {
+    return { database: parsed as unknown as Database, migrated: false };
+  }
+
+  if (parsed.version === 1) {
+    const legacy = parsed as unknown as LegacyDatabaseV1;
+    return {
+      database: {
+        version: 2,
+        agents: legacy.agents,
+        messages: legacy.messages,
+        runs: legacy.runs.map((run) => ({ ...run, transactionId: null })),
+        transactions: [],
+      },
+      migrated: true,
+    };
+  }
+
+  throw new Error("Unsupported database format");
+}
 
 export class JsonStore {
   private data: Database = emptyDatabase();
@@ -19,11 +64,9 @@ export class JsonStore {
     await mkdir(path.dirname(this.filePath), { recursive: true });
     try {
       const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Database;
-      if (parsed.version !== 1 || !Array.isArray(parsed.agents)) {
-        throw new Error("Unsupported database format");
-      }
-      this.data = parsed;
+      const { database, migrated } = parseDatabase(raw);
+      this.data = database;
+      if (migrated) await this.persist(database);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

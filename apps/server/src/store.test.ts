@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -52,5 +52,50 @@ describe("JsonStore", () => {
     expect(store.snapshot().messages.map((message) => message.content)).toEqual([
       "queue recovered",
     ]);
+  });
+
+  it("migrates starter database version 1 without losing runs", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-migration-test-"));
+    temporaryDirectories.push(root);
+    const filePath = path.join(root, "db.json");
+    const timestamp = new Date().toISOString();
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        agents: [],
+        messages: [],
+        runs: [
+          {
+            id: "run-1",
+            agentId: "agent-1",
+            status: "completed",
+            prompt: "legacy",
+            output: "done",
+            error: null,
+            usage: null,
+            startedAt: timestamp,
+            completedAt: timestamp,
+            createdAt: timestamp,
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const store = new JsonStore(filePath);
+    await store.initialize();
+
+    expect(store.snapshot()).toMatchObject({
+      version: 2,
+      transactions: [],
+      runs: [{ id: "run-1", transactionId: null }],
+    });
+    const persisted = JSON.parse(await readFile(filePath, "utf8")) as {
+      version: number;
+      transactions: unknown[];
+    };
+    expect(persisted.version).toBe(2);
+    expect(persisted.transactions).toEqual([]);
   });
 });

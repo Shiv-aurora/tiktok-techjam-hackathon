@@ -1,4 +1,4 @@
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type { Agent, AgentRun, AgentTransaction, Message, SystemInfo } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -69,6 +69,10 @@ export const api = {
     request<{ messages: Message[] }>("/api/agents/" + id + "/messages"),
   runs: (id: string) =>
     request<{ runs: AgentRun[] }>("/api/agents/" + id + "/runs"),
+  transactions: (id: string) =>
+    request<{ transactions: AgentTransaction[] }>(
+      "/api/agents/" + id + "/transactions",
+    ),
   sendMessage: (id: string, content: string) =>
     request<{ run: AgentRun; message: Message }>(
       "/api/agents/" + id + "/messages",
@@ -78,4 +82,6 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+  transaction: (id: string) =>
+    request<{ transaction: AgentTransaction }>("/api/transactions/" + id),
 };

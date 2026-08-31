@@ -1,4 +1,12 @@
-import { mkdtemp } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  link,
+  mkdtemp,
+  readFile,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -69,7 +77,7 @@ describe("Agent lifecycle", () => {
     expect(service.listAgents()).toHaveLength(0);
   });
 
-  it("persists a playground conversation", async () => {
+  it("persists a playground conversation through a committed transaction", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Coder" });
     const { run } = await service.sendMessage(agent.id, "write hello world");
@@ -78,6 +86,160 @@ describe("Agent lifecycle", () => {
     expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
     expect(messages[1]?.content).toContain("write hello world");
     expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
+    expect(run.transactionId).not.toBeNull();
+    expect(service.getTransaction(run.transactionId ?? "")).toMatchObject({
+      status: "committed",
+      decision: "commit",
+      realStateOutcome: "committed",
+      cleanupStatus: "completed",
+    });
+  });
+
+  it("commits safe shadow-workspace mutations into real state", async () => {
+    const service = await makeService({
+      run: async (request) => {
+        await writeFile(path.join(request.workspacePath, "result.txt"), "safe result\n");
+        return { output: "done", threadId: "safe-thread", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Safe writer" });
+    const { run } = await service.sendMessage(agent.id, "write a safe result");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+    expect(await readFile(path.join(agent.workspacePath, "result.txt"), "utf8")).toBe(
+      "safe result\n",
+    );
+    const transaction = service.getTransaction(run.transactionId ?? "");
+    expect(transaction.status).toBe("committed");
+    expect(transaction.effects).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: "create",
+          path: "result.txt",
+          protected: false,
+        }),
+      ]),
+    );
+    expect(transaction.integrity.finalRealHash).toBe(transaction.integrity.shadowHash);
+  });
+
+  it("aborts protected-path mutations and proves real state stayed unchanged", async () => {
+    const service = await makeService({
+      run: async (request) => {
+        await writeFile(path.join(request.workspacePath, "AGENTS.md"), "tampered\n");
+        await writeFile(path.join(request.workspacePath, "unsafe.txt"), "must not persist\n");
+        return { output: "changed protected files", threadId: "tainted-thread", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Protected writer" });
+    const originalInstructions = await readFile(
+      path.join(agent.workspacePath, "AGENTS.md"),
+      "utf8",
+    );
+    const { run } = await service.sendMessage(agent.id, "change the platform instructions");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    expect(await readFile(path.join(agent.workspacePath, "AGENTS.md"), "utf8")).toBe(
+      originalInstructions,
+    );
+    await expect(access(path.join(agent.workspacePath, "unsafe.txt"))).rejects.toThrow();
+    const transaction = service.getTransaction(run.transactionId ?? "");
+    expect(transaction).toMatchObject({
+      status: "aborted",
+      decision: "abort",
+      realStateOutcome: "unchanged",
+      cleanupStatus: "completed",
+    });
+    expect(transaction.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "PROTECTED_PATH_MUTATION",
+          path: "AGENTS.md",
+        }),
+      ]),
+    );
+    expect(transaction.integrity.finalRealHash).toBe(transaction.integrity.baselineHash);
+    expect(service.getAgent(agent.id)).toMatchObject({
+      status: "ready",
+      codexThreadId: null,
+    });
+  });
+
+  it("detects permission-only changes to protected files", async () => {
+    const service = await makeService({
+      run: async (request) => {
+        await chmod(path.join(request.workspacePath, "AGENTS.md"), 0o777);
+        return { output: "changed mode", threadId: "tainted-thread", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Mode changer" });
+    const { run } = await service.sendMessage(agent.id, "make instructions executable");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    const transaction = service.getTransaction(run.transactionId ?? "");
+    expect(transaction.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "PROTECTED_PATH_MUTATION", path: "AGENTS.md" }),
+      ]),
+    );
+    expect(transaction.integrity.finalRealHash).toBe(transaction.integrity.baselineHash);
+  });
+
+  it("aborts absolute and escaping symlinks created in shadow state", async () => {
+    const service = await makeService({
+      run: async (request) => {
+        await symlink(
+          path.join(request.workspacePath, "README.md"),
+          path.join(request.workspacePath, "absolute-link"),
+        );
+        await symlink("../outside-shadow", path.join(request.workspacePath, "escape-link"));
+        return { output: "created links", threadId: "tainted-thread", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Link creator" });
+    const { run } = await service.sendMessage(agent.id, "create links");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    const transaction = service.getTransaction(run.transactionId ?? "");
+    expect(transaction.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "ABSOLUTE_SYMLINK", path: "absolute-link" }),
+        expect.objectContaining({ code: "EXTERNAL_SYMLINK", path: "escape-link" }),
+      ]),
+    );
+    await expect(access(path.join(agent.workspacePath, "absolute-link"))).rejects.toThrow();
+    await expect(access(path.join(agent.workspacePath, "escape-link"))).rejects.toThrow();
+  });
+
+  it("aborts hard links so committed files remain transaction-owned", async () => {
+    const service = await makeService({
+      run: async (request) => {
+        const source = path.join(request.workspacePath, "hardlink-source.txt");
+        await writeFile(source, "shared inode\n");
+        await link(source, path.join(request.workspacePath, "hardlink-copy.txt"));
+        return { output: "created hard link", threadId: "tainted-thread", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Hard link creator" });
+    const { run } = await service.sendMessage(agent.id, "create hard links");
+
+    await expect.poll(() => service.getRun(run.id).status).toBe("failed");
+    const transaction = service.getTransaction(run.transactionId ?? "");
+    expect(transaction.violations).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "HARD_LINK" })]),
+    );
+    await expect(access(path.join(agent.workspacePath, "hardlink-source.txt"))).rejects.toThrow();
+    await expect(access(path.join(agent.workspacePath, "hardlink-copy.txt"))).rejects.toThrow();
   });
 
   it("atomically accepts only one concurrent run per Agent", async () => {
