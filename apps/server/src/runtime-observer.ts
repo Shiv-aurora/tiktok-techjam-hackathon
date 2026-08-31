@@ -56,13 +56,15 @@ export function buildRuntimeObservationEnvironment(
   baseEnvironment: NodeJS.ProcessEnv = process.env,
   additionalEnvironment: NodeJS.ProcessEnv = {},
 ): NodeJS.ProcessEnv {
-  const existingNodeOptions = baseEnvironment.NODE_OPTIONS?.trim();
-  return {
+  const environment: NodeJS.ProcessEnv = {
     ...baseEnvironment,
     ...additionalEnvironment,
-    NODE_OPTIONS: [existingNodeOptions, "--require=" + session.observerPath]
-      .filter((value): value is string => Boolean(value))
-      .join(" "),
+  };
+  delete environment.NODE_OPTIONS;
+
+  return {
+    ...environment,
+    NODE_OPTIONS: "--require=" + session.observerPath,
     ZEROCOMMIT_TRANSACTION_ID: session.transactionId,
     ZEROCOMMIT_EFFECT_LOG: session.effectLogPath,
     ZEROCOMMIT_WORKSPACE_ROOT: session.workspaceRoot,
