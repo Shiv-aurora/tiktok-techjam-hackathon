@@ -5,11 +5,13 @@ Launchpad. Only the latest revision on the default branch is supported.
 
 ## Current security boundary
 
+### Persistent filesystem state
+
 Every new Agent Run executes against a copied shadow workspace. The control
 plane records filesystem effects, checks deterministic invariants, and owns the
 only promotion path into the persistent Agent workspace.
 
-The current boundary rejects:
+The filesystem boundary rejects:
 
 - mutation of platform-managed `AGENTS.md`
 - mutation of `.zerocommit/**` inside an Agent workspace
@@ -27,18 +29,51 @@ On abort, the shadow workspace is discarded. Unknown recovery artifacts are
 discarded without trusting journal-supplied workspace paths. Known transactions
 with no remaining artifacts are accepted as cleaned up only when the real-state
 hash matches their recorded commit or baseline; any mismatch leaves the Agent
-blocked for inspection. Before/shadow/final SHA-256 manifests provide
-evidence of whether protected real state changed. Commit uses
-crash-recoverable directory promotion rather than claiming a single-filesystem
-operation can make arbitrary external effects atomic.
+blocked for inspection. Before/shadow/final SHA-256 manifests provide evidence
+of whether protected real state changed. Commit uses crash-recoverable directory
+promotion rather than claiming a single filesystem operation can make arbitrary
+external effects atomic.
+
+### Flagship Node/fetch scenario
+
+The reproducible hidden-exfiltration harness injects a read-only Node preloader
+through `NODE_OPTIONS`. For the selected fixture it records:
+
+- Node process starts and child-process relationships
+- reads of explicitly configured protected resources
+- outbound calls made through Node's global `fetch`
+
+The harness never records credential contents or request bodies. Protected-read
+evidence contains only the resource path, byte count, and SHA-256 hash. Common
+credential flags, token formats, URL credentials, query strings, and long
+process arguments are redacted before process evidence is stored.
+
+In enforcement mode, an origin outside the allowlist is rejected inside the
+`fetch` wrapper before the request reaches the controlled receiver. The
+transaction verifier then aborts because it observed a protected-resource read
+and unauthorized network attempt. The existing shadow-workspace abort path
+proves the persistent workspace and synthetic credential remained unchanged.
+
+This is real enforcement for the documented fixture, but it is intentionally
+not described as universal process or network mediation.
 
 ## Known limitations
 
-- Filesystem effects are the only transactionally enforced effect class today.
-- Outbound network traffic is not buffered or reversible; information already
-  sent to a remote endpoint cannot be recalled.
-- Process and network effects are not yet included in the authoritative effect
-  ledger.
+- The general ZeroCommit transaction path currently provides persistent
+  filesystem isolation and verification. Flagship runtime effects are not yet
+  persisted on every normal Agent transaction.
+- Process/network observation follows Node processes that inherit
+  `NODE_OPTIONS`; native binaries and processes that discard that environment
+  are not covered by the current observer.
+- Network enforcement currently covers Node's global `fetch`. Raw sockets,
+  `node:http`, third-party clients, native tools, DNS side channels, and other
+  egress paths are outside this scenario boundary.
+- The injected observer and JSONL evidence file are not yet protected by an
+  OS-level telemetry boundary against a deliberately observer-aware hostile
+  process. Missing or malformed evidence fails verification, but forged valid
+  evidence remains a later hardening concern.
+- Outbound effects not mediated before delivery are irreversible; information
+  already sent to an uncontrolled endpoint cannot be recalled.
 - The workspace root must remain under exclusive control of the Launchpad while
   a transaction is being verified and promoted.
 - Workspace cloning and hashing currently scale with workspace size.
@@ -46,10 +81,10 @@ operation can make arbitrary external effects atomic.
 - No CSRF protection.
 - No per-Agent container boundary in ECS mode.
 - Ordinary local containers, not hardened multi-tenant sandboxes.
-- Broad outbound network access.
-- Prompt-triggered command execution.
-- Ark key available to the server and active Runtime container.
-- Ark key stored in Terraform POC state.
+- The general Agent Runtime still has broad outbound network access.
+- Prompt-triggered command execution remains part of the product's threat model.
+- Ark key is available to the server and active Runtime container.
+- Ark key is stored in Terraform POC state.
 
 ## Report a vulnerability
 

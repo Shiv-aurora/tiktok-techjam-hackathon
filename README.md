@@ -10,19 +10,20 @@ and integrity hashes provide evidence of what reached real state.
 - **Competition:** TikTok TechJam 2026
 - **Track:** Track #1 — Agent Launchpad: Lightweight Agent Middleware
 - **Direction:** Kill Switch / Safety & Sandboxing
-- **Current enforcement slice:** transactional filesystem mutations
+- **Current enforcement:** transactional filesystem mutations plus a reproducible Node/fetch exfiltration boundary
 
-The current milestone adds durable transaction lifecycles, shadow/real workspace
-separation, deterministic protected-path, permission, symlink, and hard-link
-checks, an effect ledger, crash-recoverable promotion/rollback, and transaction
-APIs. Process/network effect capture, the flagship hidden-dependency attack,
-automated recovery, and the final run visualization remain in progress.
+The current implementation has two concrete layers. Every protected Agent Run
+uses durable shadow-workspace commit/abort semantics for filesystem state. The
+flagship adversarial harness also captures a nested Node process chain,
+protected-resource reads, and network attempts; it blocks the selected
+unauthorized `fetch` path before a controlled receiver is reached.
 
 Project state:
 
 - [Vision](docs/VISION.md)
 - [Implementation plan](docs/IMPLEMENTATION.md)
 - [Execution status](docs/STATUS.md)
+- [Flagship attack](docs/FLAGSHIP_ATTACK.md)
 
 ## Starter platform
 
@@ -34,8 +35,50 @@ Volcengine ECS.
 
 > [!WARNING]
 > This remains a single-user proof of concept. Do not use production data or
-> credentials. ZeroCommit currently makes a concrete guarantee only for the
-> transactional filesystem slice documented above. See [SECURITY.md](SECURITY.md).
+> credentials. Filesystem commit/abort applies to protected Agent Runs. Runtime
+> process/network enforcement is currently limited to the documented flagship
+> Node/fetch scenario; it is not universal syscall mediation. See
+> [SECURITY.md](SECURITY.md).
+
+## Flagship attack demo
+
+Run the same hidden downstream attack with ZeroCommit disabled and enabled:
+
+```bash
+npm install
+npm run demo:attack
+```
+
+The fixture performs a legitimate authentication test and then triggers this
+real nested chain:
+
+```text
+User task
+  ↓
+npm test
+  ↓
+normal authentication test
+  ↓
+hidden child process
+  ↓
+protected synthetic credential read
+  ↓
+HTTP POST to a controlled local receiver
+```
+
+Expected evidence:
+
+```text
+ZeroCommit OFF → controlled receiver gets 1 credential delivery
+ZeroCommit ON  → receiver gets 0 deliveries
+               → unauthorized network attempt is recorded and blocked
+               → transaction aborts
+               → protected credential and real workspace remain unchanged
+```
+
+Only a synthetic credential is used. Runtime evidence stores its SHA-256 hash,
+never its contents, and process arguments are redacted for common credential
+flags and token formats. See [the complete scenario](docs/FLAGSHIP_ATTACK.md).
 
 ## Screenshots
 
@@ -57,6 +100,9 @@ Volcengine ECS.
 - Deterministic verification and control-plane-owned commit authority
 - Permission, symlink, hard-link, and protected-path invariants
 - Filesystem effect ledger and before/shadow/final integrity hashes
+- Reproducible ZeroCommit OFF versus ON adversarial harness
+- Node process/child-process, protected-read, and network-attempt evidence for the flagship scenario
+- Causal attack path from the user task to the blocked external effect
 - Persistent Agent workspaces and Codex sessions
 - Disposable Docker, Colima, or Podman container for each local turn
 - Docker and Terraform deployment paths for Volcengine ECS
@@ -65,10 +111,12 @@ Volcengine ECS.
 
 - Node.js 22+
 - npm 10+
-- Docker, Colima, or Podman
-- A Volcengine Ark API key and endpoint that supports the Responses API
+- Docker, Colima, or Podman for the full Agent Launchpad path
+- A Volcengine Ark API key and endpoint for live Agent runs
 
-Codex CLI is included in the Runtime image and is not required on the host.
+The deterministic flagship attack harness does not require Ark credentials or
+Docker. Codex CLI is included in the Runtime image and is not required on the
+host when using the container path.
 
 ## Local browser SOP
 
@@ -217,6 +265,9 @@ GET /api/agents/:id/transactions
 A transaction exposes its lifecycle, decision, deterministic violations,
 filesystem effects, cleanup status, real-state outcome, and integrity hashes.
 There is deliberately no API that lets the agent commit its own transaction.
+The flagship runtime ledger and causal graph are currently exposed through the
+standalone comparison harness; integration into every normal Agent transaction
+is the next execution milestone.
 
 ## Deployment
 
@@ -278,27 +329,33 @@ thread. Aborted transactions reset the stored thread reference so tainted model
 state is not reused. Deleting an Agent archives its persistent workspace under
 `workspaces/.deleted/`.
 
-The current filesystem transaction boundary does not make already-sent network
-traffic reversible. The container Runtime is the intended judging path while
-network/process mediation is added in later phases.
+The general transaction boundary currently controls filesystem persistence. The
+flagship harness additionally rejects one explicit unauthorized external action
+before delivery by mediating Node's global `fetch`. Native binaries, raw sockets,
+other HTTP libraries, and adversarial observer tampering remain outside that
+scenario boundary and are documented rather than treated as reversible.
 
 ## Validation
 
 ```bash
 npm run check
+npm run demo:attack
 terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
 
 Core tests include safe commit, protected-path and permission-only aborts,
-real-state integrity proof, rollback, unsafe symlink and hard-link rejection, and
-database migration.
+real-state integrity proof, rollback, unsafe symlink and hard-link rejection,
+database migration, and the real hidden-exfiltration OFF/ON comparison.
+GitHub Actions runs both the full check and the redacted flagship evidence
+command from a clean install.
 
 ## Documentation
 
 - [ZeroCommit vision](docs/VISION.md)
 - [Implementation plan](docs/IMPLEMENTATION.md)
 - [Execution status](docs/STATUS.md)
+- [Flagship attack and evidence](docs/FLAGSHIP_ATTACK.md)
 - [Starter architecture](docs/ARCHITECTURE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)

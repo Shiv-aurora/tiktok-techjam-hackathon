@@ -2,7 +2,7 @@
   "name": "volc-agent-launchpad",
   "version": "1.0.0",
   "private": true,
-  "description": "A middleware-free Agent platform starter kit running Codex CLI locally or on Volcengine ECS.",
+  "description": "ZeroCommit transactional execution middleware built on the TikTok Agent Launchpad.",
   "type": "module",
   "workspaces": [
     "apps/*"
@@ -16,6 +16,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test -w @launchpad/server",
     "check": "npm run typecheck && npm run test && npm run build",
+    "demo:attack": "npm run demo:attack -w @launchpad/server",
     "poc": "./scripts/start-local-poc.sh",
     "start": "npm run start -w @launchpad/server"
   },

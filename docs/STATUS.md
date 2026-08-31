@@ -1,28 +1,28 @@
 # Status
 
-Current phase: Phase 0 validated; Phase 1 and the filesystem slice of Phases 2–3 complete  
-Current objective: Begin the canonical hidden downstream attack and process/network effect capture.
+Current phase: Filesystem transaction foundation complete; scenario-scoped Phase 3 runtime ledger and Phase 4 flagship attack complete  
+Current objective: Integrate runtime effects into normal Agent transactions, then implement abort → recovery → safe commit.
 
 Completed:
-- Inspected and validated the supplied Agent Launchpad architecture, execution path, tests, and extension seams.
-- Preserved the supplied ZeroCommit vision and implementation plan in `docs/`.
-- Added durable transactions linked to every new Run and a version-1-to-version-2 store migration.
-- Added isolated shadow workspaces, deterministic filesystem verification, an effect ledger, integrity hashes, control-plane-owned commit, abort, rollback, and restart recovery.
-- Hardened workspace and journal path validation, missing-artifact recovery, cleanup locking, and fail-closed cancellation and restart paths.
-- Added transaction read APIs and matching web-client types.
-- Added positive and adversarial tests plus clean-install CI.
-- Documented the current trust boundary and limitations.
-- Squash-merged PR #1 into `main` as commit `a8aea7f616b8f92aa970223a51cc42fd72f2bdd8`.
+- Preserved the supplied ZeroCommit vision and implementation plan and validated the Agent Launchpad extension points.
+- Added durable transactions, isolated shadow workspaces, deterministic filesystem verification, effect evidence, control-plane-owned commit/abort, rollback, restart recovery, and transaction APIs.
+- Built a real hidden downstream attack where `npm test` starts child processes, reads a synthetic protected credential, and attempts an HTTP POST to a controlled receiver.
+- Added the same-command ZeroCommit OFF/ON harness: OFF delivers the credential once; ON records and blocks the attempt, aborts, and proves the real workspace and credential are unchanged.
+- Added structured process, child-process, protected-read, and network-attempt evidence plus a causal attack path.
+- Added fail-closed handling for malformed or incomplete runtime evidence, process-argument redaction, accurate allowlist classification, a transform-stable CommonJS observer, bounded output, and process-tree timeout cleanup.
+- Remediated the inherited production dependency advisories and made the production-only audit a permanent CI gate.
+- Added a compiled `npm run demo:attack` path, scenario documentation, an explicit threat boundary, and clean-install CI evidence.
 
 Last verified:
-- `npm run check` passed on Node.js 22 in GitHub Actions from a clean `npm ci` at the final PR head `b278a469a41cca711fb75eb01c9bb000c7abc0fc`.
-- The check covered server and web typechecking, the complete automated test suite, and the production build.
-- Focused runtime smoke tests proved safe commit and unchanged real-state hashes after rejected permission, symlink, hard-link, cleanup-race, and recovery-tampering scenarios.
-- The merged change set contains only the intended 20-file ZeroCommit transaction-foundation milestone.
+- A clean Node.js 22 remediation run at commit `3837a7a4310b00c19f2339166611ed6147084dce` reported `0` npm vulnerabilities, passed server/web typechecking, passed 32 tests across 10 files, and completed both production builds.
+- The compiled demo produced: OFF receiver deliveries `1`; ON receiver deliveries `0`; ON decision `abort`; network contained `true`; real state unchanged `true`; protected credential unchanged `true`.
+- Both modes recorded 4 process starts, 3 child-process spawn effects, 1 protected read, and 1 unauthorized network attempt; the ON attempt was blocked before delivery.
+- The temporary write-enabled remediation workflow was removed after generating and validating the lockfile update.
 
 Blockers:
-- A live Ark/Codex Agent Run requires runtime credentials and a container environment; deterministic transaction behavior is validated without them.
+- A live Ark/Codex Agent Run still requires runtime credentials and the container environment.
+- Runtime observation is currently proven for the documented Node/global-`fetch` scenario; it is not universal syscall mediation and is not yet persisted for every normal Agent transaction.
 
 Next:
-- Implement the canonical hidden downstream attack with ZeroCommit disabled/enabled comparison.
-- Capture the process and network effects required to explain and verify that scenario.
+- Wire runtime effects and the causal graph into `AgentService`, transaction persistence, and the existing transaction APIs.
+- Implement automatic abort → clean recovery → rerun → legitimate task commit.
