@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Agent } from "./types.js";
+import type { Agent, AgentTransaction } from "./types.js";
 import { WorkspaceIsolationError, WorkspaceManager } from "./workspace.js";
 
 const temporaryDirectories: string[] = [];
@@ -125,6 +125,94 @@ describe("transactional workspace", () => {
     ]);
     expect(await readFile(sentinel, "utf8")).toBe("must survive\n");
     await expect(lstat(orphanPath)).rejects.toThrow();
+  });
+
+  it("validates unresolved transactions whose recovery artifacts are missing", async () => {
+    const { manager, agent } = await createWorkspace();
+    const currentHash = await manager.hashWorkspace(agent.workspacePath);
+    const timestamp = new Date().toISOString();
+    const transaction = (
+      id: string,
+      overrides: Partial<AgentTransaction>,
+    ): AgentTransaction => ({
+      id,
+      agentId: agent.id,
+      runId: "99999999-9999-4999-8999-999999999999",
+      status: "committed",
+      decision: "commit",
+      decisionReason: "verified",
+      violations: [],
+      effects: [],
+      isolation: "shadow-workspace",
+      realStateOutcome: "committed",
+      integrity: {
+        baselineHash: currentHash,
+        shadowHash: currentHash,
+        realHashBeforeDecision: currentHash,
+        finalRealHash: currentHash,
+      },
+      cleanupStatus: "pending",
+      cleanupError: null,
+      startedAt: timestamp,
+      verifiedAt: timestamp,
+      completedAt: timestamp,
+      createdAt: timestamp,
+      ...overrides,
+    });
+    const committed = transaction(
+      "66666666-6666-4666-8666-666666666666",
+      {},
+    );
+    const preparing = transaction(
+      "77777777-7777-4777-8777-777777777777",
+      {
+        status: "preparing",
+        decision: null,
+        decisionReason: null,
+        realStateOutcome: null,
+        integrity: {
+          baselineHash: null,
+          shadowHash: null,
+          realHashBeforeDecision: null,
+          finalRealHash: null,
+        },
+        verifiedAt: null,
+        completedAt: null,
+      },
+    );
+    const mismatched = transaction(
+      "88888888-8888-4888-8888-888888888888",
+      {
+        integrity: {
+          baselineHash: currentHash,
+          shadowHash: "not-the-current-workspace",
+          realHashBeforeDecision: currentHash,
+          finalRealHash: "not-the-current-workspace",
+        },
+      },
+    );
+
+    expect(
+      await manager.recoverTransactions([committed, preparing, mismatched]),
+    ).toEqual([
+      expect.objectContaining({
+        transactionId: committed.id,
+        action: "validated-commit",
+        finalRealHash: currentHash,
+        error: null,
+      }),
+      expect.objectContaining({
+        transactionId: preparing.id,
+        action: "validated-abort",
+        finalRealHash: currentHash,
+        error: null,
+      }),
+      expect.objectContaining({
+        transactionId: mismatched.id,
+        action: "failed",
+        finalRealHash: null,
+      }),
+    ]);
   });
 
   it("rejects existing symlinks that escape the protected workspace", async () => {

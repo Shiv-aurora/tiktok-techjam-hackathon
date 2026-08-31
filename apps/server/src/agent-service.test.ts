@@ -283,6 +283,50 @@ describe("Agent lifecycle", () => {
       .toBe("completed");
   });
 
+  it("keeps a cancelled Agent blocked when rollback cleanup fails", async () => {
+    let finish!: (result: RunnerResult) => void;
+    let announceStarted!: () => void;
+    const pending = new Promise<RunnerResult>((resolve) => {
+      finish = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      announceStarted = resolve;
+    });
+    const { service, workspaces } = await makeHarness({
+      run: () => {
+        announceStarted();
+        return pending;
+      },
+      cancel: async () => {
+        finish({ output: "cancelled", threadId: "tainted-thread", usage: null });
+        return true;
+      },
+      isAvailable: async () => true,
+    });
+    workspaces.abortTransaction = async () => {
+      throw new Error("rollback unavailable");
+    };
+    const agent = await service.createAgent({ name: "Failed rollback" });
+    const { run } = await service.sendMessage(agent.id, "start then cancel");
+    await started;
+
+    const stopped = await service.stopAgent(agent.id);
+
+    expect(stopped).toMatchObject({
+      status: "stopped",
+      lastError: expect.stringContaining("ZeroCommit cleanup failed"),
+    });
+    expect(service.getRun(run.id).status).toBe("cancelled");
+    expect(service.getTransaction(run.transactionId ?? "")).toMatchObject({
+      status: "aborted",
+      cleanupStatus: "failed",
+      realStateOutcome: "unknown",
+    });
+    await expect(service.startAgent(agent.id)).rejects.toMatchObject({
+      statusCode: 409,
+    });
+  });
+
   it("fails closed when transaction recovery cannot be trusted", async () => {
     const { service, store, workspaces } = await makeHarness();
     const agent = await service.createAgent({ name: "Recovery guard" });

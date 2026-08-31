@@ -64,7 +64,13 @@ export interface TransactionInspection {
 
 export interface TransactionRecoveryResult {
   transactionId: string;
-  action: "finalized-commit" | "rolled-back" | "discarded-orphan" | "failed";
+  action:
+    | "finalized-commit"
+    | "rolled-back"
+    | "validated-commit"
+    | "validated-abort"
+    | "discarded-orphan"
+    | "failed";
   finalRealHash: string | null;
   error: string | null;
 }
@@ -540,9 +546,9 @@ export class WorkspaceManager {
     );
     const entries = await readdir(this.transactionRoot, { withFileTypes: true });
     const results: TransactionRecoveryResult[] = [];
+    const transactionsWithArtifacts = new Set<string>();
 
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
       const transactionPath = path.join(this.transactionRoot, entry.name);
       const transaction = knownTransactions.get(entry.name);
 
@@ -563,6 +569,17 @@ export class WorkspaceManager {
             error: error instanceof Error ? error.message : String(error),
           });
         }
+        continue;
+      }
+
+      transactionsWithArtifacts.add(transaction.id);
+      if (!entry.isDirectory()) {
+        results.push({
+          transactionId: transaction.id,
+          action: "failed",
+          finalRealHash: null,
+          error: "Transaction recovery artifact is not a directory",
+        });
         continue;
       }
 
@@ -603,6 +620,66 @@ export class WorkspaceManager {
             error: null,
           });
         }
+      } catch (error) {
+        results.push({
+          transactionId: transaction.id,
+          action: "failed",
+          finalRealHash: null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    for (const transaction of transactions) {
+      if (
+        transactionsWithArtifacts.has(transaction.id) ||
+        transaction.cleanupStatus === "completed"
+      ) {
+        continue;
+      }
+
+      try {
+        const finalRealHash = await this.hashWorkspace(
+          this.workspacePath(transaction.agentId),
+        );
+        if (transaction.status === "committed") {
+          const expectedRealHash =
+            transaction.integrity.finalRealHash ?? transaction.integrity.shadowHash;
+          if (!expectedRealHash || finalRealHash !== expectedRealHash) {
+            throw new WorkspaceIsolationError(
+              "Committed transaction is missing recovery artifacts and real state does not match the verified commit",
+            );
+          }
+          results.push({
+            transactionId: transaction.id,
+            action: "validated-commit",
+            finalRealHash,
+            error: null,
+          });
+          continue;
+        }
+
+        const baselineHash = transaction.integrity.baselineHash;
+        if (baselineHash && finalRealHash !== baselineHash) {
+          throw new WorkspaceIsolationError(
+            "Transaction is missing recovery artifacts and protected real state does not match its baseline",
+          );
+        }
+        if (
+          !baselineHash &&
+          transaction.status !== "created" &&
+          transaction.status !== "preparing"
+        ) {
+          throw new WorkspaceIsolationError(
+            "Transaction is missing both recovery artifacts and a protected-state baseline",
+          );
+        }
+        results.push({
+          transactionId: transaction.id,
+          action: "validated-abort",
+          finalRealHash,
+          error: null,
+        });
       } catch (error) {
         results.push({
           transactionId: transaction.id,

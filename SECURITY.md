@@ -9,7 +9,7 @@ Every new Agent Run executes against a copied shadow workspace. The control
 plane records filesystem effects, checks deterministic invariants, and owns the
 only promotion path into the persistent Agent workspace.
 
-The current verifier blocks:
+The current boundary rejects:
 
 - mutation of platform-managed `AGENTS.md`
 - mutation of `.zerocommit/**` inside an Agent workspace
@@ -20,12 +20,15 @@ The current verifier blocks:
 - special files such as sockets, devices, and FIFOs
 - commit when the real or shadow workspace diverges after verification
 - recovery journals that do not match a known transaction and Agent
+- missing recovery artifacts when real state does not match stored integrity evidence
 - subsequent Agent activity while transaction cleanup or recovery is unresolved
 
 On abort, the shadow workspace is discarded. Unknown recovery artifacts are
-discarded without trusting journal-supplied workspace paths; a known recovery
-mismatch leaves the Agent blocked for inspection. Before/shadow/final SHA-256
-manifests provide evidence of whether protected real state changed. Commit uses
+discarded without trusting journal-supplied workspace paths. Known transactions
+with no remaining artifacts are accepted as cleaned up only when the real-state
+hash matches their recorded commit or baseline; any mismatch leaves the Agent
+blocked for inspection. Before/shadow/final SHA-256 manifests provide
+evidence of whether protected real state changed. Commit uses
 crash-recoverable directory promotion rather than claiming a single-filesystem
 operation can make arbitrary external effects atomic.
 

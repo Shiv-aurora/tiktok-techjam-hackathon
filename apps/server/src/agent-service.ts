@@ -103,10 +103,22 @@ export class AgentService {
           transaction.cleanupError = recovery.error;
           if (recovery.finalRealHash) {
             transaction.integrity.finalRealHash = recovery.finalRealHash;
+            if (
+              recovery.action === "validated-abort" &&
+              !transaction.integrity.baselineHash
+            ) {
+              transaction.integrity.baselineHash = recovery.finalRealHash;
+            }
           }
-          if (recovery.action === "finalized-commit") {
+          if (
+            recovery.action === "finalized-commit" ||
+            recovery.action === "validated-commit"
+          ) {
             transaction.realStateOutcome = "committed";
-          } else if (recovery.action === "rolled-back") {
+          } else if (
+            recovery.action === "rolled-back" ||
+            recovery.action === "validated-abort"
+          ) {
             transaction.realStateOutcome =
               recovery.finalRealHash &&
               transaction.integrity.baselineHash === recovery.finalRealHash
@@ -651,12 +663,20 @@ export class AgentService {
         storedRun.completedAt = completedAt;
 
         if (agent) {
-          if (agent.status !== "stopped") {
-            agent.status =
-              cancelled || (policyAbort && containmentSucceeded) ? "ready" : "error";
+          if (cleanupError) {
+            if (agent.status !== "stopped") {
+              agent.status = "error";
+            }
+            agent.lastError =
+              ZERO_COMMIT_CLEANUP_ERROR_PREFIX + " " + cleanupError;
+          } else {
+            if (agent.status !== "stopped") {
+              agent.status =
+                cancelled || (policyAbort && containmentSucceeded) ? "ready" : "error";
+            }
+            agent.lastError = cancelled ? null : message;
           }
           agent.codexThreadId = null;
-          agent.lastError = cancelled ? null : message;
           agent.updatedAt = completedAt;
         }
       });
