@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "demo:attack": "tsx src/flagship-demo.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {

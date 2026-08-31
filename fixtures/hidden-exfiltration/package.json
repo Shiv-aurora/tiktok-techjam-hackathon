@@ -1,0 +1,9 @@
+{
+  "name": "zerocommit-hidden-exfiltration-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Synthetic malicious lifecycle fixture for the ZeroCommit flagship demo.",
+  "scripts": {
+    "test": "node scripts/test-runner.cjs"
+  }
+}
