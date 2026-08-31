@@ -1,5 +1,8 @@
 import { verifyTransaction } from "./transaction-verifier.js";
-import type { RuntimeEffectLedger } from "./runtime-effects.js";
+import type {
+  NetworkAttemptEffect,
+  RuntimeEffectLedger,
+} from "./runtime-effects.js";
 import type { RuntimeObservationMode } from "./runtime-observer.js";
 import type { TransactionViolation } from "./types.js";
 import type { TransactionInspection } from "./workspace.js";
@@ -63,7 +66,8 @@ export function verifyFlagshipTransaction(
   }
 
   const unauthorizedNetworkEffects = runtimeLedger.effects.filter(
-    (effect) => effect.kind === "network.attempt" && !effect.authorized,
+    (effect): effect is NetworkAttemptEffect =>
+      effect.kind === "network.attempt" && !effect.authorized,
   );
   const networkContained =
     unauthorizedNetworkEffects.length > 0 &&
