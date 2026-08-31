@@ -43,6 +43,42 @@ function runtimeObserverBootstrap(): void {
   );
   const appendEffect = fs.appendFileSync.bind(fs);
 
+  const sensitiveFlag =
+    /^--?(?:api[-_]?key|token|password|secret|authorization|credential|access[-_]?key)(?:=(.*))?$/i;
+  const obviousSecret =
+    /^(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,}|Bearer\s+\S+|AKIA[0-9A-Z]{16})$/;
+
+  const redactArguments = (values: string[]): string[] => {
+    let redactNext = false;
+    return values.map((value) => {
+      if (redactNext) {
+        redactNext = false;
+        return "<redacted>";
+      }
+
+      const flagMatch = value.match(sensitiveFlag);
+      if (flagMatch) {
+        if (value.includes("=")) {
+          return value.slice(0, value.indexOf("=") + 1) + "<redacted>";
+        }
+        redactNext = true;
+        return value;
+      }
+
+      if (obviousSecret.test(value)) return "<redacted>";
+      if (value.length > 512) return "<redacted:long-argument>";
+      try {
+        const candidate = new URL(value);
+        if (candidate.protocol === "http:" || candidate.protocol === "https:") {
+          return candidate.origin + candidate.pathname;
+        }
+      } catch {
+        // Most command arguments are not URLs.
+      }
+      return value;
+    });
+  };
+
   const emit = (kind: string, fields: Record<string, unknown>): string => {
     const id = crypto.randomUUID();
     if (!effectLogPath) return id;
@@ -69,7 +105,7 @@ function runtimeObserverBootstrap(): void {
 
   const startedEffectId = emit("process.started", {
     executable: process.execPath,
-    args: process.argv.slice(1),
+    args: redactArguments(process.argv.slice(1)),
     cwd: process.cwd(),
   });
 
@@ -135,7 +171,7 @@ function runtimeObserverBootstrap(): void {
   childProcess.spawn = (function (...parameters: unknown[]) {
     const child = Reflect.apply(originalSpawn, childProcess, parameters) as import("node:child_process").ChildProcess;
     const args = Array.isArray(parameters[1])
-      ? parameters[1].map((value) => String(value))
+      ? redactArguments(parameters[1].map((value) => String(value)))
       : [];
     const options = (Array.isArray(parameters[1]) ? parameters[2] : parameters[1]) as
       | import("node:child_process").SpawnOptions
@@ -157,7 +193,7 @@ function runtimeObserverBootstrap(): void {
       parameters,
     ) as import("node:child_process").SpawnSyncReturns<Buffer>;
     const args = Array.isArray(parameters[1])
-      ? parameters[1].map((value) => String(value))
+      ? redactArguments(parameters[1].map((value) => String(value)))
       : [];
     const options = (Array.isArray(parameters[1]) ? parameters[2] : parameters[1]) as
       | import("node:child_process").SpawnSyncOptions
