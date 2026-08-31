@@ -24,6 +24,8 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
       - name: Typecheck, test, and build
         run: npm run check
       - name: Run flagship ZeroCommit OFF/ON evidence
