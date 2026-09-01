@@ -53,6 +53,33 @@ export interface FilesystemEffect {
   recordedAt: string;
 }
 
+export interface RuntimeEffect {
+  id: string;
+  transactionId: string;
+  kind:
+    | "process.started"
+    | "process.spawned"
+    | "process.exited"
+    | "sensitive-resource.read"
+    | "network.attempt";
+  processId: number;
+  parentProcessId: number;
+  parentEffectId: string | null;
+  recordedAt: string;
+  [key: string]: unknown;
+}
+
+export interface CausalEffectGraph {
+  nodes: Array<{
+    id: string;
+    kind: string;
+    label: string;
+    parentEffectId: string | null;
+    risk: "normal" | "sensitive" | "dangerous" | "blocked";
+  }>;
+  attackPath: string[];
+}
+
 export interface AgentTransaction {
   id: string;
   agentId: string;
@@ -62,6 +89,16 @@ export interface AgentTransaction {
   decisionReason: string | null;
   violations: Array<{ code: string; message: string; path: string | null }>;
   effects: FilesystemEffect[];
+  runtimeEffects: RuntimeEffect[];
+  runtimeSummary: {
+    processesStarted: number;
+    processesSpawned: number;
+    sensitiveReads: number;
+    networkAttempts: number;
+    blockedNetworkAttempts: number;
+    unauthorizedNetworkAttempts: number;
+  };
+  causalGraph: CausalEffectGraph | null;
   isolation: "shadow-workspace";
   realStateOutcome: "unchanged" | "committed" | "unknown" | null;
   integrity: {
@@ -110,6 +147,7 @@ export interface SystemInfo {
     isolation: string;
     commitAuthority: string;
     protectedPaths: string[];
+    protectedResources: string[];
     currentEffectCoverage: string[];
     externalEffects: string;
   };

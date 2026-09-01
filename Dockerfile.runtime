@@ -27,6 +27,8 @@ ENV CODEX_HOME=/codex-home
 ENV HOME=/tmp
 ENV NO_COLOR=1
 
+RUN mkdir -p /zerocommit
+
 WORKDIR /workspace
 
 CMD ["codex", "--version"]

@@ -7,7 +7,17 @@ import {
   TransactionAbortedError,
 } from "./errors.js";
 import { JsonStore } from "./store.js";
-import { verifyTransaction } from "./transaction-verifier.js";
+import {
+  buildCausalEffectGraph,
+  emptyRuntimeEffectSummary,
+  summarizeRuntimeEffects,
+} from "./runtime-effects.js";
+import {
+  prepareRuntimeObservation,
+  readRuntimeEffectLedger,
+  type RuntimeObservationSession,
+} from "./runtime-observer.js";
+import { verifyObservedTransaction } from "./runtime-verifier.js";
 import type {
   Agent,
   AgentRun,
@@ -16,6 +26,7 @@ import type {
   CreateAgentInput,
   Database,
   Message,
+  RunnerResult,
   TransactionViolation,
   UpdateAgentInput,
 } from "./types.js";
@@ -359,6 +370,9 @@ export class AgentService {
       decisionReason: null,
       violations: [],
       effects: [],
+      runtimeEffects: [],
+      runtimeSummary: emptyRuntimeEffectSummary(),
+      causalGraph: null,
       isolation: "shadow-workspace",
       realStateOutcome: null,
       integrity: {
@@ -441,8 +455,15 @@ export class AgentService {
         isolation: "shadow-workspace",
         commitAuthority: "control-plane",
         protectedPaths: ["AGENTS.md", ".zerocommit/**"],
-        currentEffectCoverage: ["filesystem"],
-        externalEffects: "not-yet-escrowed",
+        protectedResources: this.config.zeroCommitProtectedResources,
+        currentEffectCoverage: [
+          "filesystem",
+          "node-process",
+          "node-sensitive-read",
+          "node-global-fetch-network",
+        ],
+        externalEffects:
+          "unauthorized Node global-fetch requests are blocked before delivery; other network stacks are not yet mediated",
       },
     };
   }
@@ -453,6 +474,7 @@ export class AgentService {
     transaction: AgentTransaction,
   ): Promise<void> {
     let workspace: PreparedTransactionWorkspace | null = null;
+    let runtimeObservation: RuntimeObservationSession | null = null;
     const startedAt = now();
 
     try {
@@ -466,6 +488,14 @@ export class AgentService {
       });
 
       workspace = await this.workspaces.prepareTransaction(transaction.id, agentAtStart);
+      runtimeObservation = await prepareRuntimeObservation({
+        transactionId: transaction.id,
+        transactionPath: workspace.transactionPath,
+        workspaceRoot: workspace.shadowWorkspacePath,
+        mode: "enforce",
+        protectedResources: this.config.zeroCommitProtectedResources,
+        allowedNetworkOrigins: this.config.zeroCommitAllowedNetworkOrigins,
+      });
       await this.store.mutate((database) => {
         const storedTransaction = requiredTransaction(database, transaction.id);
         storedTransaction.status = "executing";
@@ -476,13 +506,20 @@ export class AgentService {
         throw new RunCancelledError();
       }
 
-      const result = await this.runner.run({
-        agentId: agentAtStart.id,
-        transactionId: transaction.id,
-        workspacePath: workspace.shadowWorkspacePath,
-        prompt: run.prompt,
-        threadId: agentAtStart.codexThreadId,
-      });
+      let result: RunnerResult | null = null;
+      let executionError: unknown = null;
+      try {
+        result = await this.runner.run({
+agentId: agentAtStart.id,
+transactionId: transaction.id,
+workspacePath: workspace.shadowWorkspacePath,
+prompt: run.prompt,
+threadId: agentAtStart.codexThreadId,
+runtimeObservation,
+        });
+      } catch (error) {
+        executionError = error;
+      }
 
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
@@ -492,7 +529,17 @@ export class AgentService {
         requiredTransaction(database, transaction.id).status = "verifying";
       });
       const inspection = await this.workspaces.inspectTransaction(workspace);
-      const verification = verifyTransaction(inspection);
+      const runtimeLedger = await readRuntimeEffectLedger(runtimeObservation);
+      const verification = verifyObservedTransaction(
+        inspection,
+        runtimeLedger,
+        runtimeObservation.mode,
+        executionError,
+      );
+      const causalGraph = buildCausalEffectGraph(runtimeLedger, transaction.id, {
+        taskLabel: "User task: " + run.prompt.slice(0, 160),
+        commandLabel: "Agent runtime: Codex",
+      });
       const verifiedAt = now();
       await this.store.mutate((database) => {
         const storedTransaction = requiredTransaction(database, transaction.id);
@@ -500,11 +547,14 @@ export class AgentService {
         storedTransaction.decisionReason = verification.reason;
         storedTransaction.violations = verification.violations;
         storedTransaction.effects = inspection.effects;
+        storedTransaction.runtimeEffects = runtimeLedger.effects;
+        storedTransaction.runtimeSummary = summarizeRuntimeEffects(runtimeLedger);
+        storedTransaction.causalGraph = causalGraph;
         storedTransaction.integrity = {
-          baselineHash: inspection.baselineHash,
-          shadowHash: inspection.shadowHash,
-          realHashBeforeDecision: inspection.realHashBeforeDecision,
-          finalRealHash: null,
+baselineHash: inspection.baselineHash,
+shadowHash: inspection.shadowHash,
+realHashBeforeDecision: inspection.realHashBeforeDecision,
+finalRealHash: null,
         };
         storedTransaction.verifiedAt = verifiedAt;
       });
@@ -512,10 +562,14 @@ export class AgentService {
       if (verification.decision === "abort") {
         throw new TransactionAbortedError(verification.reason, verification.violations);
       }
+      if (!result) {
+        throw executionError instanceof Error
+? executionError
+: new Error("Agent execution did not produce a result");
+      }
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
-
       await this.store.mutate((database) => {
         requiredTransaction(database, transaction.id).status = "committing";
       });

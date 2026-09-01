@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
+import { buildRuntimeObservationEnvironment } from "./runtime-observer.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -132,7 +133,12 @@ export class CodexRunner implements AgentRunner {
     const args = buildCodexArgs(request, this.config.codexSandboxMode);
     const child = spawn(this.config.codexBin, args, {
       cwd: request.workspacePath,
-      env: this.childEnvironment(),
+      env: request.runtimeObservation
+        ? buildRuntimeObservationEnvironment(
+            request.runtimeObservation,
+            this.childEnvironment(),
+          )
+        : this.childEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
     });
     const settled = new Promise<void>((resolve) => {

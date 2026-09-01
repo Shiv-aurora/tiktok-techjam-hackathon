@@ -1,3 +1,6 @@
+import type { CausalEffectGraph, RuntimeEffect, RuntimeEffectSummary } from "./runtime-effects.js";
+import type { RuntimeObservationSession } from "./runtime-observer.js";
+
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
@@ -88,6 +91,9 @@ export interface AgentTransaction {
   decisionReason: string | null;
   violations: TransactionViolation[];
   effects: FilesystemEffect[];
+  runtimeEffects: RuntimeEffect[];
+  runtimeSummary: RuntimeEffectSummary;
+  causalGraph: CausalEffectGraph | null;
   isolation: "shadow-workspace";
   realStateOutcome: TransactionRealStateOutcome;
   integrity: TransactionIntegrity;
@@ -114,7 +120,7 @@ export interface AgentRun {
 }
 
 export interface Database {
-  version: 2;
+  version: 3;
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
@@ -145,6 +151,7 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  runtimeObservation?: RuntimeObservationSession | null;
 }
 
 export interface AgentRunner {

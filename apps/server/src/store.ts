@@ -1,8 +1,10 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AgentRun, Database } from "./types.js";
+import type { AgentRun, AgentTransaction, Database } from "./types.js";
 
 interface LegacyRun extends Omit<AgentRun, "transactionId"> {}
+interface LegacyTransactionV2
+  extends Omit<AgentTransaction, "runtimeEffects" | "runtimeSummary" | "causalGraph"> {}
 
 interface LegacyDatabaseV1 {
   version: 1;
@@ -11,8 +13,25 @@ interface LegacyDatabaseV1 {
   runs: LegacyRun[];
 }
 
+interface LegacyDatabaseV2 {
+  version: 2;
+  agents: Database["agents"];
+  messages: Database["messages"];
+  runs: AgentRun[];
+  transactions: LegacyTransactionV2[];
+}
+
+const emptyRuntimeSummary = () => ({
+  processesStarted: 0,
+  processesSpawned: 0,
+  sensitiveReads: 0,
+  networkAttempts: 0,
+  blockedNetworkAttempts: 0,
+  unauthorizedNetworkAttempts: 0,
+});
+
 const emptyDatabase = (): Database => ({
-  version: 2,
+  version: 3,
   agents: [],
   messages: [],
   runs: [],
@@ -21,6 +40,13 @@ const emptyDatabase = (): Database => ({
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
+
+const migrateTransactionV2 = (transaction: LegacyTransactionV2): AgentTransaction => ({
+  ...transaction,
+  runtimeEffects: [],
+  runtimeSummary: emptyRuntimeSummary(),
+  causalGraph: null,
+});
 
 function parseDatabase(raw: string): { database: Database; migrated: boolean } {
   const parsed: unknown = JSON.parse(raw);
@@ -33,15 +59,29 @@ function parseDatabase(raw: string): { database: Database; migrated: boolean } {
     throw new Error("Unsupported database format");
   }
 
-  if (parsed.version === 2 && Array.isArray(parsed.transactions)) {
+  if (parsed.version === 3 && Array.isArray(parsed.transactions)) {
     return { database: parsed as unknown as Database, migrated: false };
+  }
+
+  if (parsed.version === 2 && Array.isArray(parsed.transactions)) {
+    const legacy = parsed as unknown as LegacyDatabaseV2;
+    return {
+      database: {
+        version: 3,
+        agents: legacy.agents,
+        messages: legacy.messages,
+        runs: legacy.runs,
+        transactions: legacy.transactions.map(migrateTransactionV2),
+      },
+      migrated: true,
+    };
   }
 
   if (parsed.version === 1) {
     const legacy = parsed as unknown as LegacyDatabaseV1;
     return {
       database: {
-        version: 2,
+        version: 3,
         agents: legacy.agents,
         messages: legacy.messages,
         runs: legacy.runs.map((run) => ({ ...run, transactionId: null })),
