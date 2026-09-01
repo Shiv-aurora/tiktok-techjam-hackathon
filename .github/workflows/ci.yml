@@ -50,7 +50,8 @@ jobs:
       - name: Extract and apply focused runtime integration
         shell: bash
         run: |
-          sed -n "/^[[:space:]]*python - <<'PY'$/,/^[[:space:]]*PY$/p" .github/workflows/runtime-agent-integration.yml | sed '1d;$d' | sed 's/^          //' > /tmp/apply-runtime-integration.py
+          git show eca37f420b69042243baf5be05e6ac856f3dd91a:.github/workflows/runtime-agent-integration.yml > /tmp/runtime-agent-integration.yml
+          sed -n "/^[[:space:]]*python - <<'PY'$/,/^[[:space:]]*PY$/p" /tmp/runtime-agent-integration.yml | sed '1d;$d' | sed 's/^          //' > /tmp/apply-runtime-integration.py
           python /tmp/apply-runtime-integration.py
       - name: Validate integrated repository
         run: |
@@ -62,7 +63,6 @@ jobs:
         shell: bash
         run: |
           git show bdd3c723d627032bf519fb4ab6371bffecb01240:.github/workflows/ci.yml > .github/workflows/ci.yml
-          rm -f .github/workflows/runtime-agent-integration.yml
           rm -f .github/workflows/runtime-agent-bootstrap.yml
           rm -f .runtime-integration-trigger
           git config user.name "github-actions[bot]"
