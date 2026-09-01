@@ -32,7 +32,7 @@ jobs:
         run: npm run demo:attack
 
   integrate-runtime-effects:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/zerocommit/runtime-agent-integration'
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/zerocommit/runtime-agent-integration'
     needs: check
     permissions:
       contents: write
@@ -77,6 +77,13 @@ jobs:
           ]:
               file = Path(name)
               file.write_text(file.read_text().replace('"\n"', '"\\n"'))
+          test = Path('apps/server/src/agent-service.test.ts')
+          text = test.read_text()
+          needle = '    expect(service.getTransaction(run.transactionId ?? "")).toMatchObject({\n'
+          replacement = '    await expect.poll(() => service.getTransaction(run.transactionId ?? "").cleanupStatus).toBe("completed");\n' + needle
+          if needle not in text:
+              raise SystemExit('cleanup assertion anchor not found')
+          test.write_text(text.replace(needle, replacement, 1))
           PATCH
       - name: Validate integrated repository
         run: |
