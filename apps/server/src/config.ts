@@ -15,6 +15,10 @@ const envSchema = z.object({
     .default("workspace-write"),
   CODEX_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(600_000),
   CODEX_MAX_OUTPUT_BYTES: z.coerce.number().int().min(65_536).default(2_097_152),
+  ZEROCOMMIT_PROTECTED_RESOURCES: z
+    .string()
+    .default(".env,.env.local,.env.production,protected/"),
+  ZEROCOMMIT_ALLOWED_NETWORK_ORIGINS: z.string().default(""),
   RUNTIME_PROVIDER: z.enum(["local-process", "container"]).default("local-process"),
   CONTAINER_ENGINE: z.string().min(1).default("docker"),
   CONTAINER_RUNTIME_IMAGE: z.string().min(1).default("volc-agent-runtime:local"),
@@ -60,6 +64,13 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
       );
     }
   }
+  const csv = (value: string): string[] =>
+    value
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+  const arkBaseUrl = env.ARK_BASE_URL.replace(/\/+$/, "");
+  const arkOrigin = new URL(arkBaseUrl).origin;
   const defaultContainerUser =
     typeof process.getuid === "function" && typeof process.getgid === "function"
       ? process.getuid() + ":" + process.getgid()
@@ -83,10 +94,14 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     containerPidsLimit: env.CONTAINER_PIDS_LIMIT,
     containerUser: env.CONTAINER_USER?.trim() || defaultContainerUser,
     runtimeInstanceId: env.RUNTIME_INSTANCE_ID,
+    zeroCommitProtectedResources: csv(env.ZEROCOMMIT_PROTECTED_RESOURCES),
+    zeroCommitAllowedNetworkOrigins: Array.from(
+      new Set([arkOrigin, ...csv(env.ZEROCOMMIT_ALLOWED_NETWORK_ORIGINS)]),
+    ),
     authToken,
     arkApiKey: env.ARK_API_KEY?.trim() ?? "",
     arkModel: env.ARK_MODEL?.trim() ?? "",
-    arkBaseUrl: env.ARK_BASE_URL.replace(/\/+$/, ""),
+    arkBaseUrl,
     nodeEnv: env.NODE_ENV,
   };
 }

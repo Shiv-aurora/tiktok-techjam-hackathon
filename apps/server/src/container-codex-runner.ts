@@ -41,6 +41,35 @@ export function buildContainerRunArgs(
 ): string[] {
   const name = containerName(request.agentId, config.runtimeInstanceId);
   const engineName = config.containerEngine.split(/[\\/]/).at(-1)?.toLowerCase();
+  const observation = request.runtimeObservation;
+  const observationArgs = observation
+    ? [
+        "--mount",
+        "type=bind,src=" +
+          observation.observerPath +
+          ",dst=/zerocommit/runtime-observer.cjs,readonly",
+        "--mount",
+        "type=bind,src=" +
+          observation.effectLogPath +
+          ",dst=/zerocommit/runtime-effects.jsonl",
+        "--env",
+        "NODE_OPTIONS=--require=/zerocommit/runtime-observer.cjs",
+        "--env",
+        "ZEROCOMMIT_TRANSACTION_ID=" + observation.transactionId,
+        "--env",
+        "ZEROCOMMIT_EFFECT_LOG=/zerocommit/runtime-effects.jsonl",
+        "--env",
+        "ZEROCOMMIT_WORKSPACE_ROOT=/workspace",
+        "--env",
+        "ZEROCOMMIT_MODE=" + observation.mode,
+        "--env",
+        "ZEROCOMMIT_PROTECTED_RESOURCES=" +
+          JSON.stringify(observation.protectedResources),
+        "--env",
+        "ZEROCOMMIT_ALLOWED_NETWORK_ORIGINS=" +
+          JSON.stringify(observation.allowedNetworkOrigins),
+      ]
+    : [];
   return [
     "run",
     "--rm",
@@ -76,6 +105,7 @@ export function buildContainerRunArgs(
     "HOME=/tmp",
     "--env",
     "NO_COLOR=1",
+    ...observationArgs,
     "--mount",
     "type=bind,src=" + request.workspacePath + ",dst=/workspace",
     "--mount",

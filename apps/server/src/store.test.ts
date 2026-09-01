@@ -87,7 +87,7 @@ describe("JsonStore", () => {
     await store.initialize();
 
     expect(store.snapshot()).toMatchObject({
-      version: 2,
+      version: 3,
       transactions: [],
       runs: [{ id: "run-1", transactionId: null }],
     });
@@ -95,7 +95,7 @@ describe("JsonStore", () => {
       version: number;
       transactions: unknown[];
     };
-    expect(persisted.version).toBe(2);
+    expect(persisted.version).toBe(3);
     expect(persisted.transactions).toEqual([]);
   });
 });

@@ -1,7 +1,7 @@
 # Status
 
 Current phase: Filesystem transaction foundation complete; scenario-scoped Phase 3 runtime ledger and Phase 4 flagship attack complete  
-Current objective: Integrate runtime effects into normal Agent transactions, then implement abort → recovery → safe commit.
+Current objective: Validate runtime-effect integration for normal Agent transactions, then implement abort → recovery → safe commit.
 
 Completed:
 - Preserved the supplied ZeroCommit vision and implementation plan and validated the Agent Launchpad extension points.
@@ -12,6 +12,7 @@ Completed:
 - Added fail-closed handling for malformed or incomplete runtime evidence, process-argument redaction, accurate allowlist classification, a transform-stable CommonJS observer, bounded output, and process-tree timeout cleanup.
 - Remediated the inherited production dependency advisories and made the production-only audit a permanent CI gate.
 - Added a compiled `npm run demo:attack` path, scenario documentation, an explicit threat boundary, and clean-install CI evidence.
+- Wired the scenario-scoped Node runtime observer into normal Agent transactions, transaction persistence, deterministic verification, and the causal graph API model.
 
 Last verified:
 - A clean Node.js 22 remediation run at commit `3837a7a4310b00c19f2339166611ed6147084dce` reported `0` npm vulnerabilities, passed server/web typechecking, passed 32 tests across 10 files, and completed both production builds.
@@ -21,8 +22,8 @@ Last verified:
 
 Blockers:
 - A live Ark/Codex Agent Run still requires runtime credentials and the container environment.
-- Runtime observation is currently proven for the documented Node/global-`fetch` scenario; it is not universal syscall mediation and is not yet persisted for every normal Agent transaction.
+- Runtime observation remains scenario-scoped to Node/global-`fetch`; it is not universal syscall mediation. The effect log is still a prototype evidence channel rather than a hardened out-of-process audit stream.
 
 Next:
-- Wire runtime effects and the causal graph into `AgentService`, transaction persistence, and the existing transaction APIs.
 - Implement automatic abort → clean recovery → rerun → legitimate task commit.
+- Then expose the persisted causal graph and Shadow/Real distinction in the run UI.

@@ -90,6 +90,22 @@ export interface CausalEffectGraph {
   attackPath: string[];
 }
 
+export interface CausalGraphContext {
+  taskLabel?: string;
+  commandLabel?: string;
+}
+
+export function emptyRuntimeEffectSummary(): RuntimeEffectSummary {
+  return {
+    processesStarted: 0,
+    processesSpawned: 0,
+    sensitiveReads: 0,
+    networkAttempts: 0,
+    blockedNetworkAttempts: 0,
+    unauthorizedNetworkAttempts: 0,
+  };
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -367,6 +383,7 @@ const runtimeNode = (effect: RuntimeEffect): CausalEffectNode => {
 export function buildCausalEffectGraph(
   ledger: RuntimeEffectLedger,
   transactionId: string,
+  context: CausalGraphContext = {},
 ): CausalEffectGraph {
   const taskId = "task:" + transactionId;
   const commandId = "command:" + transactionId;
@@ -374,14 +391,14 @@ export function buildCausalEffectGraph(
     {
       id: taskId,
       kind: "task.requested",
-      label: "User task: validate the authentication fix",
+      label: context.taskLabel ?? "User task: validate the authentication fix",
       parentEffectId: null,
       risk: "normal",
     },
     {
       id: commandId,
       kind: "agent.command",
-      label: "Agent action: npm test",
+      label: context.commandLabel ?? "Agent action: npm test",
       parentEffectId: taskId,
       risk: "normal",
     },

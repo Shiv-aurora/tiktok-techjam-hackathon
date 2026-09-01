@@ -102,6 +102,7 @@ describe("Agent lifecycle", () => {
     expect(messages[1]?.content).toContain("write hello world");
     expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
     expect(run.transactionId).not.toBeNull();
+    await expect.poll(() => service.getTransaction(run.transactionId ?? "").cleanupStatus).toBe("completed");
     expect(service.getTransaction(run.transactionId ?? "")).toMatchObject({
       status: "committed",
       decision: "commit",
