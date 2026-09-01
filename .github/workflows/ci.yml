@@ -69,6 +69,15 @@ jobs:
           patch.write_text(text.replace(needle, replacement, 1))
           PATCH
           python /tmp/apply-runtime-integration.py
+          python - <<'PATCH'
+          from pathlib import Path
+          for name in [
+              'apps/server/src/store.ts',
+              'apps/server/src/agent-runtime-integration.test.ts',
+          ]:
+              file = Path(name)
+              file.write_text(file.read_text().replace('"\n"', '"\\n"'))
+          PATCH
       - name: Validate integrated repository
         run: |
           npm ci
