@@ -30,3 +30,43 @@ jobs:
         run: npm run check
       - name: Run flagship ZeroCommit OFF/ON evidence
         run: npm run demo:attack
+
+  integrate-runtime-effects:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/zerocommit/runtime-agent-integration'
+    needs: check
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: zerocommit/runtime-agent-integration
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Extract and apply focused runtime integration
+        shell: bash
+        run: |
+          sed -n "/^[[:space:]]*python - <<'PY'$/,/^[[:space:]]*PY$/p" .github/workflows/runtime-agent-integration.yml | sed '1d;$d' | sed 's/^          //' > /tmp/apply-runtime-integration.py
+          python /tmp/apply-runtime-integration.py
+      - name: Validate integrated repository
+        run: |
+          npm ci
+          npm run check
+          npm audit --omit=dev --audit-level=high
+          npm run demo:attack
+      - name: Commit validated integration and restore normal CI
+        shell: bash
+        run: |
+          git show bdd3c723d627032bf519fb4ab6371bffecb01240:.github/workflows/ci.yml > .github/workflows/ci.yml
+          rm -f .github/workflows/runtime-agent-integration.yml
+          rm -f .github/workflows/runtime-agent-bootstrap.yml
+          rm -f .runtime-integration-trigger
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: persist runtime effects in Agent transactions [runtime-agent-integration]"
+          git push origin HEAD:zerocommit/runtime-agent-integration
