@@ -52,6 +52,22 @@ jobs:
         run: |
           git show eca37f420b69042243baf5be05e6ac856f3dd91a:.github/workflows/runtime-agent-integration.yml > /tmp/runtime-agent-integration.yml
           sed -n "/^[[:space:]]*python - <<'PY'$/,/^[[:space:]]*PY$/p" /tmp/runtime-agent-integration.yml | sed '1d;$d' | sed 's/^          //' > /tmp/apply-runtime-integration.py
+          python - <<'PATCH'
+          from pathlib import Path
+          patch = Path('/tmp/apply-runtime-integration.py')
+          text = patch.read_text()
+          needle = 'replace_once("apps/server/src/agent-service.ts", old_run, new_run)'
+          replacement = "\n".join([
+              'service_file = Path("apps/server/src/agent-service.ts")',
+              'service_text = service_file.read_text()',
+              'service_start = service_text.index("      const result = await this.runner.run({")',
+              'service_end = service_text.index(\'      await this.store.mutate((database) => {\\n        requiredTransaction(database, transaction.id).status = "committing";\\n      });\\n\', service_start)',
+              'service_file.write_text(service_text[:service_start] + new_run + service_text[service_end:])',
+          ])
+          if needle not in text:
+              raise SystemExit('AgentService patch call not found')
+          patch.write_text(text.replace(needle, replacement, 1))
+          PATCH
           python /tmp/apply-runtime-integration.py
       - name: Validate integrated repository
         run: |
@@ -63,7 +79,6 @@ jobs:
         shell: bash
         run: |
           git show bdd3c723d627032bf519fb4ab6371bffecb01240:.github/workflows/ci.yml > .github/workflows/ci.yml
-          rm -f .github/workflows/runtime-agent-bootstrap.yml
           rm -f .runtime-integration-trigger
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
